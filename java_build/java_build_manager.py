@@ -11,7 +11,7 @@ CONFIG_FILE = "build_manager_settings.json"
 class BuildManagerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("SM Build Manager V2 (Dynamic)")
+        self.root.title("SM Build Manager V2.1 (Auto-Detect)")
         self.root.geometry("900x700")
         
         self.projects = []
@@ -20,8 +20,8 @@ class BuildManagerApp:
         # --- UI SETUP ---
         self.setup_ui()
         
-        # --- LOAD SAVED CONFIG ---
-        self.load_settings()
+        # --- LOAD SAVED CONFIG / AUTO DETECT ---
+        self.load_initial_settings()
 
     def setup_ui(self):
         # 1. Configuration Frame (Top)
@@ -43,7 +43,7 @@ class BuildManagerApp:
         btn_browse_java.grid(row=1, column=2)
 
         # Row 3: Reload Button
-        btn_load = tk.Button(frame_config, text="🔄 Reload Projects from Workspace", command=self.load_projects_from_workspace, bg="#ddd")
+        btn_load = tk.Button(frame_config, text="🔄 Reload Projects", command=self.load_projects_from_workspace, bg="#f0f0f0")
         btn_load.grid(row=2, column=1, sticky="e", pady=5)
 
         # 2. Project List (Middle)
@@ -82,7 +82,65 @@ class BuildManagerApp:
         self.log_area = scrolledtext.ScrolledText(self.root, height=12, state='disabled', bg="black", fg="#00FF00", font=("Consolas", 9))
         self.log_area.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-    # --- LOGIC FOR BROWSING & SAVING ---
+    # --- INTELLIGENT DETECTION ---
+
+    def detect_java8_path(self):
+        """Mencoba menebak lokasi Java 8 secara otomatis"""
+        
+        # 1. Cek Lokasi Spesifik User (Berdasarkan history Anda)
+        user_home = os.path.expanduser("~")
+        specific_path = os.path.join(user_home, "Documents", "SM_TOOLS", "java", "jdk8u452-b09")
+        if os.path.exists(specific_path):
+            return specific_path
+
+        # 2. Cek Environment Variable 'JAVA_HOME'
+        env_java = os.environ.get("JAVA_HOME", "")
+        if env_java and ("1.8" in env_java or "jdk8" in env_java.lower()):
+            return env_java
+
+        # 3. Cek folder standar Windows
+        common_roots = [r"C:\Program Files\Java", r"C:\Program Files (x86)\Java"]
+        for root in common_roots:
+            if os.path.exists(root):
+                try:
+                    for folder in os.listdir(root):
+                        # Cari folder yang mengandung 'jdk1.8' atau 'jdk-8'
+                        if "jdk1.8" in folder or "jdk-8" in folder:
+                            return os.path.join(root, folder)
+                except: pass
+        
+        return "" # Menyerah, biarkan kosong
+
+    def load_initial_settings(self):
+        """Load dari file JSON, jika kosong gunakan auto-detect"""
+        ws_path = ""
+        java_path = ""
+
+        # Coba baca file config
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    ws_path = data.get("workspace_path", "")
+                    java_path = data.get("java_home", "")
+            except Exception:
+                pass
+
+        # Jika Java Path kosong di config, jalankan Auto-Detect
+        if not java_path:
+            java_path = self.detect_java8_path()
+            if java_path:
+                self.log(f"[AUTO] Java 8 detected at: {java_path}")
+
+        # Masukkan ke UI
+        self.entry_workspace.insert(0, ws_path)
+        self.entry_java.insert(0, java_path)
+
+        # Trigger load project jika workspace ada
+        if ws_path and os.path.exists(ws_path):
+            self.load_projects_from_workspace()
+
+    # --- UI ACTIONS ---
 
     def browse_workspace(self):
         filename = filedialog.askopenfilename(
@@ -103,7 +161,6 @@ class BuildManagerApp:
             self.save_settings()
 
     def save_settings(self):
-        """Menyimpan path ke file JSON agar tidak hilang saat restart"""
         data = {
             "workspace_path": self.entry_workspace.get(),
             "java_home": self.entry_java.get()
@@ -111,51 +168,32 @@ class BuildManagerApp:
         try:
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(data, f)
-        except Exception as e:
-            self.log(f"[WARN] Failed to save settings: {e}")
+        except Exception: pass
 
-    def load_settings(self):
-        """Memuat setting terakhir"""
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    data = json.load(f)
-                    ws_path = data.get("workspace_path", "")
-                    java_path = data.get("java_home", "")
-                    
-                    self.entry_workspace.insert(0, ws_path)
-                    self.entry_java.insert(0, java_path)
-                    
-                    if ws_path and os.path.exists(ws_path):
-                        self.load_projects_from_workspace()
-            except Exception:
-                pass
-
-    # --- CORE LOGIC ---
+    # --- CORE BUILD LOGIC ---
 
     def load_projects_from_workspace(self):
         workspace_file = self.entry_workspace.get()
         
-        # Reset List
+        # Clear list
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         self.projects = []
         self.vars = []
 
         if not workspace_file or not os.path.exists(workspace_file):
-            self.log("[INFO] Please select a valid workspace file first.")
+            self.log("[INFO] Please select a valid workspace file.")
             return
 
         try:
             with open(workspace_file, 'r') as f:
                 content = f.read()
-                # Handle comments in JSON (VS Code allows comments, standard JSON doesn't)
                 clean_lines = [line for line in content.splitlines() if not line.strip().startswith("//")]
                 data = json.loads("\n".join(clean_lines))
                 
                 folders = data.get("folders", [])
                 
-                # Priority Sorting: Common Lib -> BOM -> API -> Web
+                # Priority Sorting
                 priority_keywords = ["common-lib", "bom", "api", "web"]
                 sorted_folders = sorted(folders, key=lambda x: next((i for i, k in enumerate(priority_keywords) if k in x['path']), 99))
 
@@ -163,24 +201,23 @@ class BuildManagerApp:
 
                 for item in sorted_folders:
                     path = item.get("path")
-                    # Handle relative paths in workspace file
                     if not os.path.isabs(path):
                         full_path = os.path.normpath(os.path.join(ws_dir, path))
                     else:
                         full_path = os.path.normpath(path)
                     
-                    # Create Checkbox
                     var = tk.IntVar()
                     chk = tk.Checkbutton(self.scrollable_frame, text=full_path, variable=var, anchor='w', bg="white")
                     chk.pack(fill='x', padx=5, pady=2)
                     self.projects.append(full_path)
                     self.vars.append(var)
                 
-                self.log(f"[INFO] Loaded {len(self.projects)} projects from workspace.")
+                self.log(f"[INFO] Loaded {len(self.projects)} projects.")
+                self.save_settings() # Auto save jika berhasil load
 
         except Exception as e:
             self.log(f"[ERROR] Failed to load projects: {str(e)}")
-            messagebox.showerror("Error", f"Could not parse workspace file:\n{e}")
+            messagebox.showerror("Error", f"Workspace Error:\n{e}")
 
     def select_all(self):
         for var in self.vars: var.set(1)
@@ -200,8 +237,8 @@ class BuildManagerApp:
 
     def run_builds(self):
         java_home = self.entry_java.get()
-        if not java_home or not os.path.exists(java_home):
-            messagebox.showerror("Error", "Java Home path is invalid!")
+        if not java_home:
+            messagebox.showerror("Error", "Java 8 Path cannot be empty!")
             self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
             return
 
@@ -235,8 +272,6 @@ class BuildManagerApp:
                 continue
 
             try:
-                # Menjalankan Maven Process
-                # shell=True diperlukan di Windows agar mengenali command 'mvn' dengan benar via PATH
                 process = subprocess.Popen(
                     mvn_cmd, 
                     cwd=project_path, 
@@ -249,7 +284,6 @@ class BuildManagerApp:
                 
                 for line in process.stdout:
                     clean_line = line.strip()
-                    # Filter log agar tidak spam, tapi tampilkan error/info penting
                     if any(x in clean_line for x in ["[INFO]", "[ERROR]", "[WARNING]", "BUILD"]):
                          self.log(clean_line)
                 
@@ -257,13 +291,11 @@ class BuildManagerApp:
 
                 if process.returncode == 0:
                     self.log(f"✅ [SUCCESS] {folder_name}")
-                    
-                    # Auto-Copy ws.properties for dfms-web
                     if "dfms-web" in folder_name:
                         self.copy_ws_properties(project_path)
                 else:
                     self.log(f"❌ [FAILURE] {folder_name}")
-                    messagebox.showerror("Build Failed", f"Failed to build {folder_name}.\nCheck log for details.")
+                    messagebox.showerror("Build Failed", f"Failed to build {folder_name}")
                     self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
                     return 
 
@@ -284,11 +316,10 @@ class BuildManagerApp:
         
         if os.path.exists(src):
             try:
-                if not os.path.exists(dst):
-                    os.makedirs(dst)
+                if not os.path.exists(dst): os.makedirs(dst)
                 import shutil
                 shutil.copy(src, dst)
-                self.log(f"   └── [PATCH] ws.properties copied to target folder.")
+                self.log(f"   └── [PATCH] ws.properties copied to target.")
             except Exception as e:
                 self.log(f"   └── [ERROR] Failed to copy ws.properties: {e}")
         else:
