@@ -1,0 +1,15 @@
+{
+    "workspace_path": "C:/Users/muhammada27/Documents/SM_PROJECT/E-Procurement Phase 3/API/eproc-email-api.code-workspace",
+    "java_home": "C:\\Users\\muhammada27\\Documents\\SM_TOOLS\\java\\jdk8u452-b09",
+    "tomcat_home": "C:/Users/muhammada27/Documents/SM_TOOLS/tomcat-server/apache-tomcat-7.0.67-dfms-api",
+    "active_tabs": [
+        "email-api",
+        "Tomcat-1"
+    ],
+    "deploy_map": {
+        "email-api": {
+            "project": "C:/Users/muhammada27/Documents/SM_PROJECT/E-Procurement Phase 3/API/eproc-email-api/email-api",
+            "target": "email-api"
+        }
+    }
+}
