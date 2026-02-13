@@ -1,0 +1,19 @@
+{
+    "workspace_path": "C:/Users/muhammada27/Documents/SM_PROJECT/DFMS/eproc-dfms/workspace_dfms/dfms.code-workspace",
+    "java_home": "C:\\Users\\muhammada27\\Documents\\SM_TOOLS\\java\\jdk8u452-b09",
+    "tomcat_home": "C:/Users/muhammada27/Documents/SM_TOOLS/tomcat-server/apache-tomcat-7.0.67",
+    "active_tabs": [
+        "Tomcat-1",
+        "Tomcat-2"
+    ],
+    "deploy_map": {
+        "Tomcat-2": {
+            "project": "C:/Users/muhammada27/Documents/SM_PROJECT/DFMS/eproc-dfms/web-dfms/dfms-api",
+            "target": "dfms-api"
+        },
+        "Tomcat-1": {
+            "project": "C:/Users/muhammada27/Documents/SM_PROJECT/DFMS/eproc-dfms/web-dfms/dfms-web",
+            "target": "dfms-web"
+        }
+    }
+}
