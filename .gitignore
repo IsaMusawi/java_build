@@ -1,2 +1,13 @@
-*/tools/*
-*.pyc
+# Python
+__pycache__/
+*.py[cod]
+
+# Build artifacts
+build/
+dist/
+
+# Local tools
+tools/
+
+# Backup files
+*.bak
