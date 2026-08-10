@@ -5,9 +5,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 import threading
 import shutil
+from path import app_dir, tools_dir
 
 # Nama file untuk menyimpan konfigurasi terakhir user
-CONFIG_FILE = "build_manager_settings.json"
+# CONFIG_FILE = "build_manager_settings.json"
+CONFIG_FILE = str(app_dir() / "build_manager_settings.json")
 
 class BuildManagerApp:
     def __init__(self, root):
@@ -92,14 +94,13 @@ class BuildManagerApp:
     def get_mvn_command(self):
         """Mencari Maven: Prioritas Portable -> System"""
         # 1. Cek Portable Maven di folder 'tools' sebelah script
-        current_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Cari folder apapun yang berawalan 'apache-maven' di dalam 'tools'
-        tools_dir = os.path.join(current_dir, "tools")
-        if os.path.exists(tools_dir):
-            for folder in os.listdir(tools_dir):
+        # 1. Cek Portable Maven di folder 'tools' sebelah EXE
+        tdir = tools_dir()
+        if tdir.exists():
+            for folder in os.listdir(str(tdir)):
                 if folder.startswith("apache-maven"):
-                    mvn_bin = os.path.join(tools_dir, folder, "bin", "mvn.cmd")
+                    mvn_bin = os.path.join(str(tdir), folder, "bin", "mvn.cmd")
                     if os.path.exists(mvn_bin):
                         return mvn_bin, "Portable"
         
@@ -285,6 +286,7 @@ class BuildManagerApp:
         my_env = os.environ.copy()
         my_env["JAVA_HOME"] = java_home
         my_env["PATH"] = f"{java_home}\\bin;" + my_env["PATH"]
+        comspec = os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")
 
         mvn_cmd_path, _ = self.get_mvn_command()
         if not mvn_cmd_path:
@@ -302,20 +304,39 @@ class BuildManagerApp:
             folder_name = os.path.basename(project_path)
             
             self.log(f"\n>>> Building: {folder_name} ...")
+
+            # --- Pre-flight checks (avoid WinError 2 mystery) ---
+            if not os.path.isdir(project_path):
+                self.log(f"❌ [CRITICAL] Project folder not found: {project_path}")
+                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+                return
+
+            if isinstance(base_cmd[0], str) and base_cmd[0].lower().endswith(".cmd") and not os.path.exists(base_cmd[0]):
+                self.log(f"❌ [CRITICAL] Maven file not found: {base_cmd[0]}")
+                self.log("   └── Put apache-maven-* inside ./tools next to the EXE.")
+                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+                return
             
             if not os.path.exists(os.path.join(project_path, "pom.xml")):
                 self.log(f"[SKIP] No pom.xml")
                 continue
 
             try:
+               # If Maven is a .cmd file, run via absolute cmd.exe /c (more reliable than "cmd" on PATH)
+                if isinstance(base_cmd[0], str) and base_cmd[0].lower().endswith((".cmd", ".bat")):
+                    cmdline = [comspec, "/c"] + base_cmd
+                else:
+                    cmdline = base_cmd
+
+                self.log(f"[DEBUG] cmd={cmdline[0]} | cwd={project_path}")
+
                 process = subprocess.Popen(
-                    base_cmd, 
+                   cmdline,
                     cwd=project_path, 
                     stdout=subprocess.PIPE, 
                     stderr=subprocess.STDOUT,
                     env=my_env, 
-                    universal_newlines=True, 
-                    shell=True 
+                    universal_newlines=True
                 )
                 
                 for line in process.stdout:
@@ -332,7 +353,12 @@ class BuildManagerApp:
                     messagebox.showerror("Build Failed", f"Failed to build {folder_name}")
                     self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
                     return 
-
+            except FileNotFoundError as e:
+                self.log(f"❌ [CRITICAL] FileNotFoundError: {e}")
+                self.log(f"[DEBUG] cmdline={cmdline}")
+                self.log(f"[DEBUG] cwd={project_path}")
+                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+                return
             except Exception as e:
                 self.log(f"[CRITICAL ERROR] {e}")
                 self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")

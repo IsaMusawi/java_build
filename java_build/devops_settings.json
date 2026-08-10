@@ -1,15 +1,21 @@
 {
     "workspace_path": "C:/Users/muhammada27/Documents/SM_PROJECT/E-Procurement Phase 3/API/eproc-email-api.code-workspace",
     "java_home": "C:\\Users\\muhammada27\\Documents\\SM_TOOLS\\java\\jdk8u452-b09",
+    "maven_home": "C:/Users/muhammada27/Documents/SM_TOOLS/apache-maven-3.2.5-bin/apache-maven-3.2.5",
     "tomcat_home": "C:/Users/muhammada27/Documents/SM_TOOLS/tomcat-server/apache-tomcat-7.0.67-dfms-api",
+    "vscode_path": "C:\\Users\\muhammada27\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
     "active_tabs": [
-        "email-api",
-        "Tomcat-1"
+        "email-api"
     ],
     "deploy_map": {
         "email-api": {
-            "project": "C:/Users/muhammada27/Documents/SM_PROJECT/E-Procurement Phase 3/API/eproc-email-api/email-api",
-            "target": "email-api"
+            "tomcat_home": "C:/Users/muhammada27/Documents/SM_TOOLS/tomcat-server/apache-tomcat-7.0.67-dfms-api",
+            "deployments": {
+                "email-api": {
+                    "project": "C:\\Users\\muhammada27\\Documents\\SM_PROJECT\\E-Procurement Phase 3\\API\\eproc-email-api\\email-api",
+                    "target": "email-api"
+                }
+            }
         }
     }
 }
