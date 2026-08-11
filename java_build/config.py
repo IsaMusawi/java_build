@@ -1,11 +1,8 @@
+import copy
 import json
 import os
 import shutil
 from pathlib import Path
-from path import app_dir
-
-
-CONFIG_FILE = str(app_dir() / "devops_settings.json")
 
 
 class ConfigManager:
@@ -45,18 +42,93 @@ class ConfigManager:
     DEBUG_CONFIG_PREFIX = "SM Debug | "
 
     def __init__(self):
-        self.data = dict(self.DEFAULTS)
+        # Configuration is intentionally NOT loaded globally.
+        # A workspace must be selected first.
+        self.workspace_path = ""
+        self.config_file = None
+        self.data = copy.deepcopy(self.DEFAULTS)
+
+    # ------------------------------------------------------------------
+    # Workspace-scoped configuration
+    # ------------------------------------------------------------------
+
+    def get_config_file(self):
+        return self.config_file or ""
+
+    def get_config_dir(self):
+        if not self.workspace_path:
+            return ""
+
+        return os.path.join(
+            os.path.dirname(self.workspace_path),
+            ".sm-devops",
+        )
+
+    def switch_workspace(self, workspace_path):
+        """
+        Switch the configuration scope to a VS Code workspace.
+
+        Configuration is stored beside the .code-workspace file:
+
+            project/
+                project.code-workspace
+                .sm-devops/
+                    devops_settings.json
+
+        This removes the old global configuration collision completely.
+        """
+        if not workspace_path:
+            raise ValueError("Workspace path tidak boleh kosong.")
+
+        workspace_path = os.path.abspath(
+            os.path.normpath(workspace_path)
+        )
+
+        if not os.path.isfile(workspace_path):
+            raise FileNotFoundError(
+                f"Workspace tidak ditemukan: {workspace_path}"
+            )
+
+        if not workspace_path.lower().endswith(
+            ".code-workspace"
+        ):
+            raise ValueError(
+                "File yang dipilih harus berekstensi .code-workspace."
+            )
+
+        self.workspace_path = workspace_path
+        self.config_file = os.path.join(
+            self.get_config_dir(),
+            "devops_settings.json",
+        )
+
+        self.data = copy.deepcopy(self.DEFAULTS)
+        self.data["workspace_path"] = workspace_path
+
         self.load()
 
     def load(self):
-        if os.path.exists(CONFIG_FILE):
+        """Load configuration for the currently selected workspace."""
+        if not self.config_file:
+            return
+
+        if os.path.exists(self.config_file):
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(
+                    self.config_file,
+                    "r",
+                    encoding="utf-8",
+                ) as f:
                     loaded = json.load(f)
+
                 if isinstance(loaded, dict):
                     self.data.update(loaded)
+
             except Exception as exc:
                 print(f"Error loading config: {exc}")
+
+        # The selected workspace is authoritative.
+        self.data["workspace_path"] = self.workspace_path
 
         self._migrate_deploy_map()
 
@@ -66,12 +138,33 @@ class ConfigManager:
         self.save()
 
     def save(self):
+        """Save only to the currently selected workspace config."""
+        if not self.config_file:
+            return False
+
         try:
-            Path(CONFIG_FILE).parent.mkdir(parents=True, exist_ok=True)
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=4)
+            Path(self.config_file).parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            with open(
+                self.config_file,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(
+                    self.data,
+                    f,
+                    indent=4,
+                    ensure_ascii=False,
+                )
+
+            return True
+
         except Exception as exc:
             print(f"Error saving config: {exc}")
+            return False
 
     def get(self, key, default=""):
         return self.data.get(key, default)
@@ -86,7 +179,7 @@ class ConfigManager:
 
     def get_projects_from_workspace(self):
         """Return [(project_name, absolute_path), ...]."""
-        ws_path = self.get("workspace_path")
+        ws_path = self.workspace_path or self.get("workspace_path")
         if not ws_path or not os.path.exists(ws_path):
             return []
 

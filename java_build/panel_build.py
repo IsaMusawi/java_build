@@ -46,11 +46,12 @@ class BuildPanel(tk.Frame):
         "-DPROJECT_ENV=LOCAL",
     ]
 
-    def __init__(self, parent, config, logger):
+    def __init__(self, parent, config, logger, workspace_callback=None):
         super().__init__(parent)
 
         self.config = config
         self.log = logger
+        self.workspace_callback = workspace_callback
         self.projects = []
         self.vars = []
 
@@ -318,15 +319,31 @@ class BuildPanel(tk.Frame):
         )
 
         if f:
-            self.ent_ws.delete(0, tk.END)
-            self.ent_ws.insert(0, f)
+            try:
+                if self.workspace_callback:
+                    changed = self.workspace_callback(f)
+                    if not changed:
+                        return
 
-            self.config.set(
-                "workspace_path",
-                f,
-            )
+                    # MainApp rebuilds the panel after switching workspace.
+                    return
 
-            self.load_projects()
+                self.config.switch_workspace(f)
+
+                # Fallback for standalone use without a callback.
+                self.ent_ws.delete(0, tk.END)
+                self.ent_ws.insert(0, self.config.get("workspace_path"))
+                self.ent_java.delete(0, tk.END)
+                self.ent_java.insert(0, self.config.get("java_home"))
+                self.ent_maven.delete(0, tk.END)
+                self.ent_maven.insert(0, self.config.get("maven_home"))
+                self.load_projects()
+
+            except Exception as exc:
+                messagebox.showerror(
+                    "Workspace",
+                    f"Gagal membuka workspace:\n\n{exc}",
+                )
 
     def browse_java(self):
         d = filedialog.askdirectory()

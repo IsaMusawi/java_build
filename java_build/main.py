@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from config import ConfigManager
 from panel_build import BuildPanel
@@ -33,7 +33,20 @@ class MainApp:
             650,
         )
 
+        # Configuration is workspace-scoped.
+        # Do not create/load any global JSON configuration here.
         self.config = ConfigManager()
+
+        # --------------------------------------------------------------
+        # Workspace selection
+        # --------------------------------------------------------------
+        self.root.withdraw()
+
+        if not self.select_workspace():
+            self.root.destroy()
+            return
+
+        self.root.deiconify()
         self.tomcat_counter = 1
 
         # --------------------------------------------------------------
@@ -42,14 +55,14 @@ class MainApp:
         self.setup_styles()
 
         # --------------------------------------------------------------
-        # Main split
-        # --------------------------------------------------------------
-        self.create_main_layout()
-
-        # --------------------------------------------------------------
         # Global log
         # --------------------------------------------------------------
         self.create_log_panel()
+
+        # --------------------------------------------------------------
+        # Main split
+        # --------------------------------------------------------------
+        self.create_main_layout()
 
         # --------------------------------------------------------------
         # Tomcat instances
@@ -58,6 +71,97 @@ class MainApp:
 
         # Restore saved Tomcat instances.
         self.restore_tabs()
+
+    # ------------------------------------------------------------------
+    # Workspace selection
+    # ------------------------------------------------------------------
+
+    def select_workspace(self):
+        """
+        Option B: select a .code-workspace when the application starts.
+
+        No workspace means no configuration file is loaded.
+        This is deliberate so multiple application instances can use
+        different workspaces without touching the same JSON file.
+        """
+        workspace = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select VS Code Workspace",
+            filetypes=[
+                ("VS Code Workspace", "*.code-workspace"),
+                ("All Files", "*.*"),
+            ],
+        )
+
+        if not workspace:
+            return False
+
+        try:
+            self.config.switch_workspace(workspace)
+        except Exception as exc:
+            messagebox.showerror(
+                "Workspace",
+                f"Gagal membuka workspace:\n\n{exc}",
+                parent=self.root,
+            )
+            return False
+
+        return True
+
+    def change_workspace(self, workspace_path):
+        """
+        Change workspace from the Build panel.
+
+        The current UI is rebuilt because Tomcat panels contain state
+        loaded from the previous workspace configuration.
+        """
+        # Never switch away while a Tomcat JVM is running.
+        if hasattr(self, "tabs"):
+            tab_ids = self.tabs.tabs()
+        else:
+            tab_ids = []
+
+        for tab_id in tab_ids:
+            try:
+                panel = self.tabs.nametowidget(tab_id)
+                if panel.is_tomcat_running():
+                    messagebox.showwarning(
+                        "Workspace",
+                        "Stop semua Tomcat terlebih dahulu sebelum mengganti workspace.",
+                        parent=self.root,
+                    )
+                    return False
+            except Exception as exc:
+                self.log(f"[WARN] Could not check Tomcat state: {exc}")
+
+        try:
+            self.config.switch_workspace(workspace_path)
+        except Exception as exc:
+            messagebox.showerror(
+                "Workspace",
+                f"Gagal membuka workspace:\n\n{exc}",
+                parent=self.root,
+            )
+            return False
+
+        # Destroy the old workspace UI. The log is recreated as well so
+        # every panel starts with a clean workspace context.
+        for child in list(self.paned.winfo_children()):
+            child.destroy()
+
+        self.tomcat_counter = 1
+        self.create_main_layout()
+        self.create_tomcat_container()
+        self.restore_tabs()
+
+        self.log(
+            f"[WORKSPACE] Loaded: {self.config.workspace_path}"
+        )
+        self.log(
+            f"[CONFIG] {self.config.get_config_file()}"
+        )
+
+        return True
 
     # ------------------------------------------------------------------
     # Styles
@@ -100,51 +204,34 @@ class MainApp:
     # ------------------------------------------------------------------
 
     def create_log_panel(self):
-        self.txt_log = tk.Text(
-            self.log_frame,
+        log_frame = tk.LabelFrame(
+            self.root,
+            text="System Logs",
+            padx=5,
+            pady=5,
+        )
+
+        log_frame.pack(
+            fill=tk.X,
+            side=tk.BOTTOM,
+            padx=5,
+            pady=5,
+        )
+
+        # Smaller than the previous height=12 so the main application
+        # keeps more vertical space.
+        self.txt_log = scrolledtext.ScrolledText(
+            log_frame,
+            height=8,
             state="disabled",
             bg="#1e1e1e",
             fg="#00FF00",
             font=("Consolas", 9),
-            wrap="none",
         )
 
-        self.log_scroll_y = ttk.Scrollbar(
-            self.log_frame,
-            orient="vertical",
-            command=self.txt_log.yview,
-        )
-
-        self.log_scroll_x = ttk.Scrollbar(
-            self.log_frame,
-            orient="horizontal",
-            command=self.txt_log.xview,
-        )
-
-        self.txt_log.configure(
-            yscrollcommand=self.log_scroll_y.set,
-            xscrollcommand=self.log_scroll_x.set,
-        )
-
-        # Text area
-        self.txt_log.grid(
-            row=0,
-            column=0,
-            sticky="nsew",
-        )
-
-        # Vertical scrollbar
-        self.log_scroll_y.grid(
-            row=0,
-            column=1,
-            sticky="ns",
-        )
-
-        # Horizontal scrollbar
-        self.log_scroll_x.grid(
-            row=1,
-            column=0,
-            sticky="ew",
+        self.txt_log.pack(
+            fill=tk.BOTH,
+            expand=True,
         )
 
     # ------------------------------------------------------------------
@@ -173,47 +260,24 @@ class MainApp:
             self.paned,
             self.config,
             self.log,
+            workspace_callback=self.change_workspace,
         )
 
         self.paned.add(
             self.left_panel,
-            minsize=360,
+            minsize=400,
         )
 
         # --------------------------------------------------------------
-        # Center: Tomcat
+        # Right: Tomcat
         # --------------------------------------------------------------
-        self.right_container = tk.Frame(self.paned)
+        self.right_container = tk.Frame(
+            self.paned
+        )
 
         self.paned.add(
             self.right_container,
-            minsize=480,
-        )
-
-        # --------------------------------------------------------------
-        # Right: System Logs
-        # --------------------------------------------------------------
-        self.log_frame = tk.LabelFrame(
-            self.paned,
-            text="System Logs",
-            padx=5,
-            pady=5,
-        )
-
-        self.log_frame.grid_rowconfigure(
-            0,
-            weight=1,
-        )
-
-        self.log_frame.grid_columnconfigure(
-            0,
-            weight=1,
-        )
-
-        self.paned.add(
-            self.log_frame,
-            minsize=300,
-            stretch="always",
+            minsize=500,
         )
 
     # ------------------------------------------------------------------
