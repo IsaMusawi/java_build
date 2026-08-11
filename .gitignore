@@ -8,6 +8,8 @@ dist/
 
 # Local tools
 tools/
+build_cache/
 
 # Backup files
 *.bak
+*.bat

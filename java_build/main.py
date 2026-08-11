@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, ttk
 
 from config import ConfigManager
 from panel_build import BuildPanel
@@ -42,14 +42,14 @@ class MainApp:
         self.setup_styles()
 
         # --------------------------------------------------------------
-        # Global log
-        # --------------------------------------------------------------
-        self.create_log_panel()
-
-        # --------------------------------------------------------------
         # Main split
         # --------------------------------------------------------------
         self.create_main_layout()
+
+        # --------------------------------------------------------------
+        # Global log
+        # --------------------------------------------------------------
+        self.create_log_panel()
 
         # --------------------------------------------------------------
         # Tomcat instances
@@ -100,34 +100,51 @@ class MainApp:
     # ------------------------------------------------------------------
 
     def create_log_panel(self):
-        log_frame = tk.LabelFrame(
-            self.root,
-            text="System Logs",
-            padx=5,
-            pady=5,
-        )
-
-        log_frame.pack(
-            fill=tk.X,
-            side=tk.BOTTOM,
-            padx=5,
-            pady=5,
-        )
-
-        # Smaller than the previous height=12 so the main application
-        # keeps more vertical space.
-        self.txt_log = scrolledtext.ScrolledText(
-            log_frame,
-            height=8,
+        self.txt_log = tk.Text(
+            self.log_frame,
             state="disabled",
             bg="#1e1e1e",
             fg="#00FF00",
             font=("Consolas", 9),
+            wrap="none",
         )
 
-        self.txt_log.pack(
-            fill=tk.BOTH,
-            expand=True,
+        self.log_scroll_y = ttk.Scrollbar(
+            self.log_frame,
+            orient="vertical",
+            command=self.txt_log.yview,
+        )
+
+        self.log_scroll_x = ttk.Scrollbar(
+            self.log_frame,
+            orient="horizontal",
+            command=self.txt_log.xview,
+        )
+
+        self.txt_log.configure(
+            yscrollcommand=self.log_scroll_y.set,
+            xscrollcommand=self.log_scroll_x.set,
+        )
+
+        # Text area
+        self.txt_log.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        # Vertical scrollbar
+        self.log_scroll_y.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+
+        # Horizontal scrollbar
+        self.log_scroll_x.grid(
+            row=1,
+            column=0,
+            sticky="ew",
         )
 
     # ------------------------------------------------------------------
@@ -160,19 +177,43 @@ class MainApp:
 
         self.paned.add(
             self.left_panel,
-            minsize=400,
+            minsize=360,
         )
 
         # --------------------------------------------------------------
-        # Right: Tomcat
+        # Center: Tomcat
         # --------------------------------------------------------------
-        self.right_container = tk.Frame(
-            self.paned
-        )
+        self.right_container = tk.Frame(self.paned)
 
         self.paned.add(
             self.right_container,
-            minsize=500,
+            minsize=480,
+        )
+
+        # --------------------------------------------------------------
+        # Right: System Logs
+        # --------------------------------------------------------------
+        self.log_frame = tk.LabelFrame(
+            self.paned,
+            text="System Logs",
+            padx=5,
+            pady=5,
+        )
+
+        self.log_frame.grid_rowconfigure(
+            0,
+            weight=1,
+        )
+
+        self.log_frame.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        self.paned.add(
+            self.log_frame,
+            minsize=300,
+            stretch="always",
         )
 
     # ------------------------------------------------------------------
