@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from config import ConfigManager
 from panel_build import BuildPanel
@@ -33,8 +33,6 @@ class MainApp:
             650,
         )
 
-        # Configuration is workspace-scoped.
-        # Do not create/load any global JSON configuration here.
         self.config = ConfigManager()
 
         # --------------------------------------------------------------
@@ -55,13 +53,10 @@ class MainApp:
         self.setup_styles()
 
         # --------------------------------------------------------------
-        # Global log
-        # --------------------------------------------------------------
-        self.create_log_panel()
-
-        # --------------------------------------------------------------
         # Main split
         # --------------------------------------------------------------
+        # The log panel is part of the same horizontal PanedWindow.
+        # This keeps the three regions in one geometry hierarchy.
         self.create_main_layout()
 
         # --------------------------------------------------------------
@@ -73,16 +68,15 @@ class MainApp:
         self.restore_tabs()
 
     # ------------------------------------------------------------------
-    # Workspace selection
+    # Workspace
     # ------------------------------------------------------------------
 
     def select_workspace(self):
         """
-        Option B: select a .code-workspace when the application starts.
+        Select the workspace at application startup.
 
-        No workspace means no configuration file is loaded.
-        This is deliberate so multiple application instances can use
-        different workspaces without touching the same JSON file.
+        Configuration is workspace-scoped, so the selected workspace
+        determines where .sm-devops/devops_settings.json lives.
         """
         workspace = filedialog.askopenfilename(
             parent=self.root,
@@ -98,6 +92,8 @@ class MainApp:
 
         try:
             self.config.switch_workspace(workspace)
+            return True
+
         except Exception as exc:
             messagebox.showerror(
                 "Workspace",
@@ -105,37 +101,40 @@ class MainApp:
                 parent=self.root,
             )
             return False
-
-        return True
 
     def change_workspace(self, workspace_path):
         """
-        Change workspace from the Build panel.
+        Switch workspace without destroying the global log panel.
 
-        The current UI is rebuilt because Tomcat panels contain state
-        loaded from the previous workspace configuration.
+        Only the Maven and Tomcat panes are rebuilt. The System Logs
+        pane remains alive so log output and its scroll position are
+        not accidentally destroyed.
         """
-        # Never switch away while a Tomcat JVM is running.
+        # Never switch while a Tomcat JVM is running.
         if hasattr(self, "tabs"):
-            tab_ids = self.tabs.tabs()
-        else:
-            tab_ids = []
+            for tab_id in self.tabs.tabs():
+                try:
+                    panel = self.tabs.nametowidget(tab_id)
 
-        for tab_id in tab_ids:
-            try:
-                panel = self.tabs.nametowidget(tab_id)
-                if panel.is_tomcat_running():
-                    messagebox.showwarning(
-                        "Workspace",
-                        "Stop semua Tomcat terlebih dahulu sebelum mengganti workspace.",
-                        parent=self.root,
+                    if panel.is_tomcat_running():
+                        messagebox.showwarning(
+                            "Workspace",
+                            (
+                                "Stop semua Tomcat terlebih dahulu "
+                                "sebelum mengganti workspace."
+                            ),
+                            parent=self.root,
+                        )
+                        return False
+
+                except Exception as exc:
+                    self.log(
+                        f"[WARN] Could not check Tomcat state: {exc}"
                     )
-                    return False
-            except Exception as exc:
-                self.log(f"[WARN] Could not check Tomcat state: {exc}")
 
         try:
             self.config.switch_workspace(workspace_path)
+
         except Exception as exc:
             messagebox.showerror(
                 "Workspace",
@@ -144,15 +143,46 @@ class MainApp:
             )
             return False
 
-        # Destroy the old workspace UI. The log is recreated as well so
-        # every panel starts with a clean workspace context.
-        for child in list(self.paned.winfo_children()):
-            child.destroy()
+        # Remove only workspace-dependent panes.
+        for pane in (
+            getattr(self, "left_panel", None),
+            getattr(self, "right_container", None),
+        ):
+            if pane is None:
+                continue
 
+            try:
+                self.paned.forget(pane)
+            except tk.TclError:
+                pass
+
+            try:
+                pane.destroy()
+            except tk.TclError:
+                pass
+
+        # Rebuild Maven + Tomcat panes.
         self.tomcat_counter = 1
-        self.create_main_layout()
+        self.create_workspace_panes()
+
+        self.paned.add(
+            self.left_panel,
+            minsize=360,
+            stretch="never",
+        )
+
+        self.paned.add(
+            self.right_container,
+            minsize=480,
+            stretch="always",
+        )
+
         self.create_tomcat_container()
         self.restore_tabs()
+
+        self.root.after_idle(
+            self._set_initial_pane_positions
+        )
 
         self.log(
             f"[WORKSPACE] Loaded: {self.config.workspace_path}"
@@ -204,34 +234,72 @@ class MainApp:
     # ------------------------------------------------------------------
 
     def create_log_panel(self):
-        log_frame = tk.LabelFrame(
-            self.root,
+        """
+        Create the System Logs pane.
+
+        The log widget uses an explicit Text + two Scrollbars instead
+        of ScrolledText so horizontal scrolling works correctly with
+        long Windows paths, Maven commands and stack traces.
+        """
+        self.log_frame = tk.LabelFrame(
+            self.paned,
             text="System Logs",
             padx=5,
             pady=5,
         )
 
-        log_frame.pack(
-            fill=tk.X,
-            side=tk.BOTTOM,
-            padx=5,
-            pady=5,
+        self.log_frame.grid_rowconfigure(
+            0,
+            weight=1,
         )
 
-        # Smaller than the previous height=12 so the main application
-        # keeps more vertical space.
-        self.txt_log = scrolledtext.ScrolledText(
-            log_frame,
-            height=8,
+        self.log_frame.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        self.txt_log = tk.Text(
+            self.log_frame,
             state="disabled",
             bg="#1e1e1e",
             fg="#00FF00",
             font=("Consolas", 9),
+            wrap="none",
         )
 
-        self.txt_log.pack(
-            fill=tk.BOTH,
-            expand=True,
+        self.log_scroll_y = ttk.Scrollbar(
+            self.log_frame,
+            orient="vertical",
+            command=self.txt_log.yview,
+        )
+
+        self.log_scroll_x = ttk.Scrollbar(
+            self.log_frame,
+            orient="horizontal",
+            command=self.txt_log.xview,
+        )
+
+        self.txt_log.configure(
+            yscrollcommand=self.log_scroll_y.set,
+            xscrollcommand=self.log_scroll_x.set,
+        )
+
+        self.txt_log.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+        )
+
+        self.log_scroll_y.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+
+        self.log_scroll_x.grid(
+            row=1,
+            column=0,
+            sticky="ew",
         )
 
     # ------------------------------------------------------------------
@@ -239,6 +307,16 @@ class MainApp:
     # ------------------------------------------------------------------
 
     def create_main_layout(self):
+        """
+        Create one horizontal PanedWindow containing exactly:
+
+            1. Maven Build
+            2. Tomcat
+            3. System Logs
+
+        The System Logs panel is intentionally part of the same
+        PanedWindow so its width follows the available window size.
+        """
         self.paned = tk.PanedWindow(
             self.root,
             orient=tk.HORIZONTAL,
@@ -253,9 +331,39 @@ class MainApp:
             pady=5,
         )
 
-        # --------------------------------------------------------------
-        # Left: Maven Build
-        # --------------------------------------------------------------
+        self.create_log_panel()
+        self.create_workspace_panes()
+
+        # Fixed order:
+        #   Maven -> Tomcat -> System Logs
+        self.paned.add(
+            self.left_panel,
+            minsize=360,
+            stretch="never",
+        )
+
+        self.paned.add(
+            self.right_container,
+            minsize=480,
+            stretch="always",
+        )
+
+        self.paned.add(
+            self.log_frame,
+            minsize=300,
+            stretch="always",
+        )
+
+        # Establish useful initial proportions after geometry is known.
+        self.root.after_idle(self._set_initial_pane_positions)
+
+    def create_workspace_panes(self):
+        """
+        Create the workspace-dependent Maven and Tomcat panes.
+
+        This method is also used when changing workspace.
+        The System Logs pane is deliberately not recreated.
+        """
         self.left_panel = BuildPanel(
             self.paned,
             self.config,
@@ -263,22 +371,56 @@ class MainApp:
             workspace_callback=self.change_workspace,
         )
 
-        self.paned.add(
-            self.left_panel,
-            minsize=400,
-        )
-
-        # --------------------------------------------------------------
-        # Right: Tomcat
-        # --------------------------------------------------------------
         self.right_container = tk.Frame(
             self.paned
         )
 
-        self.paned.add(
-            self.right_container,
-            minsize=500,
-        )
+    def _set_initial_pane_positions(self):
+        """
+        Set a practical initial 3-column layout.
+
+        Tkinter may ignore a sash position before the window has been
+        mapped, therefore this is scheduled with after_idle().
+        """
+        try:
+            total_width = self.paned.winfo_width()
+
+            if total_width <= 1:
+                return
+
+            left_width = max(
+                360,
+                int(total_width * 0.28),
+            )
+
+            log_width = max(
+                300,
+                int(total_width * 0.25),
+            )
+
+            middle_width = total_width - left_width - log_width
+
+            if middle_width < 480:
+                middle_width = 480
+                left_width = max(
+                    300,
+                    total_width - middle_width - log_width,
+                )
+
+            self.paned.sash_place(
+                0,
+                left_width,
+                0,
+            )
+
+            self.paned.sash_place(
+                1,
+                left_width + middle_width,
+                0,
+            )
+
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # Tomcat container

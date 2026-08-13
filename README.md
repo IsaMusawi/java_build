@@ -1588,3 +1588,47 @@ Restart Tomcat
 Dengan alur ini, proses development Maven → artifact → Tomcat → VS Code
 debugger tetap berada dalam satu jalur yang jelas, tanpa perlu
 menari-nari di antara terminal, Explorer, dan konfigurasi manual.
+
+# Shared Tomcat / Workspace-Scoped Refactor
+
+One workspace now uses one shared Tomcat distribution (`CATALINA_HOME`).
+Every logical Tomcat instance gets its own `CATALINA_BASE`.
+
+Runtime:
+
+<workspace>/
+  project.code-workspace
+  .sm-devops/
+    devops_settings.json
+    tomcat-instances/
+      Tomcat-1/
+      Tomcat-2/
+
+Each CATALINA_BASE owns its own:
+- conf/server.xml
+- conf/Catalina/localhost/*.xml
+- bin/setenv.bat
+- logs
+- temp
+- webapps
+- work
+
+The shared Tomcat installation is never modified by instance-specific
+deployment, port, or JPDA settings.
+
+A newly-created instance automatically receives unique ports based on
+instance order:
+- Tomcat-1: HTTP 8080, AJP 8009, shutdown 8005, debug 8000
+- Tomcat-2: HTTP 8081, AJP 8010, shutdown 8006, debug 8001
+- Tomcat-3: HTTP 8082, AJP 8011, shutdown 8007, debug 8002
+
+The loader migrates the previous configuration automatically:
+old per-instance `tomcat_home` becomes workspace-wide `tomcat_home`, while
+existing deployments are preserved.
+
+Replace:
+- config.py
+- panel_tomcat.py
+
+`java_build_manager.py` is included for reference and does not require a
+change for this refactor.

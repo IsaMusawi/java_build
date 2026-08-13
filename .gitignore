@@ -5,6 +5,7 @@ __pycache__/
 # Build artifacts
 build/
 dist/
+node_modules/
 
 # Local tools
 tools/

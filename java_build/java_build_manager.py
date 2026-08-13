@@ -1,166 +1,512 @@
 import json
 import os
-import subprocess
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, filedialog
-import threading
+import re
 import shutil
-from path import app_dir, tools_dir
+import subprocess
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-# Nama file untuk menyimpan konfigurasi terakhir user
-# CONFIG_FILE = "build_manager_settings.json"
-CONFIG_FILE = str(app_dir() / "build_manager_settings.json")
+from config import ConfigManager
+from path import tools_dir
+
 
 class BuildManagerApp:
+    """
+    Standalone Maven Build Manager.
+
+    Configuration is workspace-scoped through ConfigManager:
+
+        <workspace>/
+            project.code-workspace
+            .sm-devops/
+                devops_settings.json
+                tomcat-instances/
+                    Tomcat-1/
+                    Tomcat-2/
+
+    Tomcat architecture is intentionally shared:
+
+        tomcat_home = CATALINA_HOME (one Tomcat distribution)
+        deploy_map[instance].catalina_base = CATALINA_BASE per instance
+
+    This class does not modify CATALINA_HOME. Instance-specific Tomcat
+    configuration belongs to TomcatPanel and its CATALINA_BASE.
+    """
+
+    MAVEN_OPTIONS = [
+        "-Dmaven.javadoc.skip=true",
+        "-DskipTests",
+        "-DPROJECT_ENV=LOCAL",
+    ]
+
+    TARGET_IGNORE_DIRS = {
+        "classes",
+        "test-classes",
+        "maven-archiver",
+        "maven-status",
+        "surefire-reports",
+    }
+
     def __init__(self, root):
         self.root = root
-        self.root.title("SM Build Manager V2.2 (Dependency Check)")
+        self.root.title("SM Build Manager V2.3 (Workspace Scoped)")
         self.root.geometry("900x750")
-        
+
+        self.config = ConfigManager()
         self.projects = []
         self.vars = []
-        
-        # --- UI SETUP ---
+        self.build_running = False
+
         self.setup_ui()
-        
-        # --- LOAD SAVED CONFIG / AUTO DETECT ---
+
+        # Workspace is selected explicitly. This avoids the old global
+        # build_manager_settings.json collision between workspaces.
+        self.root.withdraw()
+        if not self.select_workspace():
+            self.root.destroy()
+            return
+        self.root.deiconify()
+
         self.load_initial_settings()
 
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+
     def setup_ui(self):
-        # 1. Configuration Frame (Top)
-        frame_config = tk.LabelFrame(self.root, text="Configuration & Health Check", padx=10, pady=10)
+        frame_config = tk.LabelFrame(
+            self.root,
+            text="Configuration & Health Check",
+            padx=10,
+            pady=10,
+        )
         frame_config.pack(fill=tk.X, padx=10, pady=5)
 
-        # Row 1: Workspace Selection
-        tk.Label(frame_config, text="Workspace File (.code-workspace):").grid(row=0, column=0, sticky="w")
+        tk.Label(
+            frame_config,
+            text="Workspace File (.code-workspace):",
+        ).grid(row=0, column=0, sticky="w")
+
         self.entry_workspace = tk.Entry(frame_config, width=70)
         self.entry_workspace.grid(row=0, column=1, padx=5)
-        btn_browse_ws = tk.Button(frame_config, text="Browse...", command=self.browse_workspace)
-        btn_browse_ws.grid(row=0, column=2)
 
-        # Row 2: Java Home Selection
-        tk.Label(frame_config, text="Java 8 Home Path:").grid(row=1, column=0, sticky="w")
+        tk.Button(
+            frame_config,
+            text="Browse...",
+            command=self.browse_workspace,
+        ).grid(row=0, column=2)
+
+        tk.Label(
+            frame_config,
+            text="Java 8 Home Path:",
+        ).grid(row=1, column=0, sticky="w")
+
         self.entry_java = tk.Entry(frame_config, width=70)
         self.entry_java.grid(row=1, column=1, padx=5)
-        btn_browse_java = tk.Button(frame_config, text="Browse...", command=self.browse_java)
-        btn_browse_java.grid(row=1, column=2)
 
-        # Row 3: Action Buttons
+        tk.Button(
+            frame_config,
+            text="Browse...",
+            command=self.browse_java,
+        ).grid(row=1, column=2)
+
+        tk.Label(
+            frame_config,
+            text="Maven Home:",
+        ).grid(row=2, column=0, sticky="w")
+
+        self.entry_maven = tk.Entry(frame_config, width=70)
+        self.entry_maven.grid(row=2, column=1, padx=5)
+
+        tk.Button(
+            frame_config,
+            text="Browse...",
+            command=self.browse_maven,
+        ).grid(row=2, column=2)
+
+        tk.Label(
+            frame_config,
+            text="Shared Tomcat Home:",
+        ).grid(row=3, column=0, sticky="w")
+
+        self.entry_tomcat = tk.Entry(frame_config, width=70)
+        self.entry_tomcat.grid(row=3, column=1, padx=5)
+
+        tk.Button(
+            frame_config,
+            text="Browse...",
+            command=self.browse_tomcat,
+        ).grid(row=3, column=2)
+
+        self.lbl_tomcat_info = tk.Label(
+            frame_config,
+            text="CATALINA_HOME: not configured",
+            anchor="w",
+            fg="#555555",
+        )
+        self.lbl_tomcat_info.grid(
+            row=4,
+            column=1,
+            sticky="w",
+            padx=5,
+            pady=(2, 0),
+        )
+
         frame_actions = tk.Frame(frame_config)
-        frame_actions.grid(row=2, column=1, sticky="w", pady=10)
-        
-        btn_load = tk.Button(frame_actions, text="🔄 Reload Projects", command=self.load_projects_from_workspace, bg="#f0f0f0")
-        btn_load.pack(side=tk.LEFT, padx=(0, 10))
-        
-        btn_check = tk.Button(frame_actions, text="🩺 Check Dependencies", command=self.run_dependency_check_ui, bg="#e3f2fd")
-        btn_check.pack(side=tk.LEFT)
+        frame_actions.grid(row=5, column=1, sticky="w", pady=10)
 
-        # 2. Project List (Middle)
-        lbl_list = tk.Label(self.root, text="Select Projects to Build:", font=("Arial", 11, "bold"))
+        tk.Button(
+            frame_actions,
+            text="🔄 Reload Projects",
+            command=self.load_projects_from_workspace,
+            bg="#f0f0f0",
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            frame_actions,
+            text="🩺 Check Dependencies",
+            command=self.run_dependency_check_ui,
+            bg="#e3f2fd",
+        ).pack(side=tk.LEFT)
+
+        lbl_list = tk.Label(
+            self.root,
+            text="Select Projects to Build:",
+            font=("Arial", 11, "bold"),
+        )
         lbl_list.pack(pady=(5, 0))
 
         frame_list = tk.Frame(self.root, bd=1, relief="sunken")
         frame_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
+
         canvas = tk.Canvas(frame_list, bg="white")
-        scrollbar = ttk.Scrollbar(frame_list, orient="vertical", command=canvas.yview)
+        scrollbar = ttk.Scrollbar(
+            frame_list,
+            orient="vertical",
+            command=canvas.yview,
+        )
         self.scrollable_frame = tk.Frame(canvas, bg="white")
 
         self.scrollable_frame.bind(
             "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
 
-        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.create_window(
+            (0, 0),
+            window=self.scrollable_frame,
+            anchor="nw",
+        )
         canvas.configure(yscrollcommand=scrollbar.set)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # 3. Action Buttons (Bottom)
         frame_btn = tk.Frame(self.root)
         frame_btn.pack(pady=10)
-        
-        tk.Button(frame_btn, text="Select All", command=self.select_all).pack(side=tk.LEFT, padx=5)
-        tk.Button(frame_btn, text="Clear All", command=self.clear_all).pack(side=tk.LEFT, padx=5)
-        
-        self.btn_build = tk.Button(frame_btn, text="BUILD SELECTED 🚀", bg="green", fg="white", font=("Arial", 10, "bold"), command=self.start_build_thread)
+
+        tk.Button(
+            frame_btn,
+            text="Select All",
+            command=self.select_all,
+        ).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            frame_btn,
+            text="Clear All",
+            command=self.clear_all,
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.btn_build = tk.Button(
+            frame_btn,
+            text="BUILD SELECTED 🚀",
+            bg="green",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            command=self.start_build_thread,
+        )
         self.btn_build.pack(side=tk.LEFT, padx=20)
 
-        # 4. Log Output
-        self.log_area = scrolledtext.ScrolledText(self.root, height=12, state='disabled', bg="black", fg="#00FF00", font=("Consolas", 9))
+        self.log_area = scrolledtext.ScrolledText(
+            self.root,
+            height=12,
+            state="disabled",
+            bg="black",
+            fg="#00FF00",
+            font=("Consolas", 9),
+        )
         self.log_area.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-    def get_mvn_command(self):
-        """Mencari Maven: Prioritas Portable -> System"""
-        # 1. Cek Portable Maven di folder 'tools' sebelah script
-        
-        # 1. Cek Portable Maven di folder 'tools' sebelah EXE
-        tdir = tools_dir()
-        if tdir.exists():
-            for folder in os.listdir(str(tdir)):
-                if folder.startswith("apache-maven"):
-                    mvn_bin = os.path.join(str(tdir), folder, "bin", "mvn.cmd")
-                    if os.path.exists(mvn_bin):
-                        return mvn_bin, "Portable"
-        
-        # 2. Fallback ke System Maven
-        if shutil.which("mvn"):
-            return "mvn", "System"
-            
-        return None, None
+    # ------------------------------------------------------------------
+    # Workspace / configuration
+    # ------------------------------------------------------------------
 
-    # --- HEALTH CHECK & DETECTION ---
+    def select_workspace(self):
+        filename = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select VS Code Workspace",
+            filetypes=[
+                ("VS Code Workspace", "*.code-workspace"),
+                ("All Files", "*.*"),
+            ],
+        )
+
+        if not filename:
+            return False
+
+        try:
+            self.config.switch_workspace(filename)
+            return True
+        except Exception as exc:
+            messagebox.showerror(
+                "Workspace",
+                f"Gagal membuka workspace:\n\n{exc}",
+                parent=self.root,
+            )
+            return False
+
+    def load_initial_settings(self):
+        self.entry_workspace.delete(0, tk.END)
+        self.entry_workspace.insert(0, self.config.get("workspace_path", ""))
+
+        self.entry_java.delete(0, tk.END)
+        self.entry_java.insert(0, self.config.get("java_home", ""))
+
+        self.entry_maven.delete(0, tk.END)
+        self.entry_maven.insert(0, self.config.get("maven_home", ""))
+
+        self.entry_tomcat.delete(0, tk.END)
+        self.entry_tomcat.insert(0, self.config.get_tomcat_home())
+
+        self.update_tomcat_info()
+
+        if self.config.get("workspace_path"):
+            self.load_projects_from_workspace()
+
+    def browse_workspace(self):
+        filename = filedialog.askopenfilename(
+            filetypes=[
+                ("VS Code Workspace", "*.code-workspace"),
+                ("All Files", "*.*"),
+            ]
+        )
+
+        if not filename:
+            return
+
+        try:
+            self.config.switch_workspace(filename)
+            self.load_initial_settings()
+        except Exception as exc:
+            messagebox.showerror(
+                "Workspace",
+                f"Gagal membuka workspace:\n\n{exc}",
+            )
+
+    def browse_java(self):
+        directory = filedialog.askdirectory()
+        if not directory:
+            return
+
+        self.entry_java.delete(0, tk.END)
+        self.entry_java.insert(0, directory)
+        self.config.set("java_home", directory)
+
+    def browse_maven(self):
+        directory = filedialog.askdirectory(title="Select Maven Home")
+        if not directory:
+            return
+
+        mvn_cmd = os.path.join(directory, "bin", "mvn.cmd")
+        mvn_bat = os.path.join(directory, "bin", "mvn.bat")
+
+        if not (os.path.exists(mvn_cmd) or os.path.exists(mvn_bat)):
+            messagebox.showerror(
+                "Maven",
+                "Folder yang dipilih bukan Maven Home.\n\n"
+                "Pastikan terdapat:\n"
+                "<Maven Home>\\bin\\mvn.cmd",
+            )
+            return
+
+        self.entry_maven.delete(0, tk.END)
+        self.entry_maven.insert(0, directory)
+        self.config.set("maven_home", directory)
+
+        self.log(f"[MAVEN] Maven Home set to: {directory}")
+
+    def browse_tomcat(self):
+        directory = filedialog.askdirectory(title="Select Shared Tomcat Home")
+        if not directory:
+            return
+
+        if not self.is_valid_tomcat_home(directory):
+            messagebox.showerror(
+                "Tomcat",
+                "Folder yang dipilih bukan Tomcat Home yang valid.\n\n"
+                "Pastikan terdapat:\n"
+                "<Tomcat Home>\\bin\\catalina.bat\n"
+                "<Tomcat Home>\\conf\\server.xml",
+            )
+            return
+
+        self.entry_tomcat.delete(0, tk.END)
+        self.entry_tomcat.insert(0, directory)
+        self.config.set_tomcat_home(directory)
+        self.update_tomcat_info()
+
+        self.log(
+            "[TOMCAT] Shared CATALINA_HOME set to: "
+            f"{directory}"
+        )
+        self.log(
+            "[TOMCAT] Per-instance CATALINA_BASE is managed separately "
+            "under .sm-devops/tomcat-instances/."
+        )
+
+    def update_tomcat_info(self):
+        tomcat_home = self.config.get_tomcat_home()
+        if tomcat_home:
+            self.lbl_tomcat_info.config(
+                text=f"CATALINA_HOME: {tomcat_home} | CATALINA_BASE: per instance"
+            )
+        else:
+            self.lbl_tomcat_info.config(
+                text="CATALINA_HOME: not configured | CATALINA_BASE: per instance"
+            )
 
     def detect_java8_path(self):
-        """Mencoba menebak lokasi Java 8"""
         user_home = os.path.expanduser("~")
-        specific_path = os.path.join(user_home, "Documents", "SM_TOOLS", "java", "jdk8u452-b09")
-        if os.path.exists(specific_path): return specific_path
+        specific_path = os.path.join(
+            user_home,
+            "Documents",
+            "SM_TOOLS",
+            "java",
+            "jdk8u452-b09",
+        )
+        if os.path.exists(specific_path):
+            return specific_path
 
         env_java = os.environ.get("JAVA_HOME", "")
-        if env_java and ("1.8" in env_java or "jdk8" in env_java.lower()): return env_java
+        if env_java and ("1.8" in env_java or "jdk8" in env_java.lower()):
+            return env_java
 
-        common_roots = [r"C:\Program Files\Java", r"C:\Program Files (x86)\Java"]
+        common_roots = [
+            r"C:\Program Files\Java",
+            r"C:\Program Files (x86)\Java",
+        ]
         for root in common_roots:
             if os.path.exists(root):
                 try:
                     for folder in os.listdir(root):
                         if "jdk1.8" in folder or "jdk-8" in folder:
                             return os.path.join(root, folder)
-                except: pass
-        return "" 
+                except OSError:
+                    pass
+
+        return ""
+
+    # ------------------------------------------------------------------
+    # Maven
+    # ------------------------------------------------------------------
+
+    def get_mvn_command(self):
+        """Configured Maven -> portable Maven -> system Maven."""
+        configured = self.entry_maven.get().strip()
+        if configured:
+            mvn_cmd = os.path.join(configured, "bin", "mvn.cmd")
+            mvn_bat = os.path.join(configured, "bin", "mvn.bat")
+            if os.path.isfile(mvn_cmd):
+                return mvn_cmd, "Configured"
+            if os.path.isfile(mvn_bat):
+                return mvn_bat, "Configured"
+
+        tdir = tools_dir()
+        if tdir.exists():
+            try:
+                for folder in sorted(os.listdir(str(tdir))):
+                    if folder.startswith("apache-maven"):
+                        mvn_bin = os.path.join(
+                            str(tdir),
+                            folder,
+                            "bin",
+                            "mvn.cmd",
+                        )
+                        if os.path.isfile(mvn_bin):
+                            return mvn_bin, "Portable"
+            except OSError:
+                pass
+
+        system_maven = shutil.which("mvn")
+        if system_maven:
+            return system_maven, "System"
+
+        return None, None
+
+    # ------------------------------------------------------------------
+    # Health check
+    # ------------------------------------------------------------------
 
     def check_prerequisites(self):
-        """Memeriksa apakah Maven dan Java valid"""
         errors = []
-        
-        # 1. Cek Maven (mvn)
-        # --- UPDATE BAGIAN INI ---
+
         mvn_cmd, source = self.get_mvn_command()
-        
         if not mvn_cmd:
-            errors.append("❌ Maven not found! (Neither in /tools nor in System PATH)")
+            errors.append(
+                "❌ Maven not found! (Configured, portable, and System PATH checked)"
+            )
         else:
             self.log(f"[CHECK] Using {source} Maven: {mvn_cmd}")
 
-        # 2. Cek Java Path (dari Input UI)
-        java_home = self.entry_java.get()
-        if not java_home or not os.path.exists(java_home):
+        java_home = self.entry_java.get().strip()
+        if not java_home or not os.path.isdir(java_home):
             errors.append("❌ Java Path is empty or does not exist.")
         else:
-            # Validasi isi folder JDK
             java_exe = os.path.join(java_home, "bin", "java.exe")
             javac_exe = os.path.join(java_home, "bin", "javac.exe")
-            
+
             if not os.path.exists(java_exe):
                 errors.append(f"❌ java.exe not found in {java_exe}")
             elif not os.path.exists(javac_exe):
-                self.log(f"[WARN] javac.exe not found. Is this a JRE? JDK is recommended for Maven.")
+                self.log(
+                    "[WARN] javac.exe not found. "
+                    "Is this a JRE? JDK is recommended for Maven."
+                )
             else:
-                self.log(f"[CHECK] Java 8 binaries verified at: {java_home}")
+                self.log(
+                    f"[CHECK] Java binaries verified at: {java_home}"
+                )
+
+        tomcat_home = self.entry_tomcat.get().strip()
+        if tomcat_home:
+            if self.is_valid_tomcat_home(tomcat_home):
+                self.log(
+                    "[CHECK] Shared Tomcat CATALINA_HOME verified: "
+                    f"{tomcat_home}"
+                )
+                self.log(
+                    "[CHECK] Tomcat instances use isolated CATALINA_BASE "
+                    "under the selected workspace."
+                )
+            else:
+                errors.append(
+                    "❌ Shared Tomcat Home is invalid. "
+                    "Expected bin\\catalina.bat and conf\\server.xml."
+                )
 
         return errors
+
+    @staticmethod
+    def is_valid_tomcat_home(path):
+        if not path or not os.path.isdir(path):
+            return False
+
+        return (
+            os.path.isfile(os.path.join(path, "bin", "catalina.bat"))
+            and os.path.isfile(os.path.join(path, "conf", "server.xml"))
+        )
 
     def run_dependency_check_ui(self):
         self.log("\n--- Running Dependency Check ---")
@@ -168,218 +514,394 @@ class BuildManagerApp:
         if errors:
             for err in errors:
                 self.log(err)
-            messagebox.showerror("Dependency Missing", "\n".join(errors))
+            messagebox.showerror(
+                "Dependency Missing",
+                "\n".join(errors),
+            )
         else:
             self.log("✅ All System Dependencies are OK!")
-            messagebox.showinfo("System Check", "All dependencies are ready for build!")
+            messagebox.showinfo(
+                "System Check",
+                "All dependencies are ready for build!",
+            )
 
-    # --- SETTINGS LOADING ---
-
-    def load_initial_settings(self):
-        ws_path = ""
-        java_path = ""
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    data = json.load(f)
-                    ws_path = data.get("workspace_path", "")
-                    java_path = data.get("java_home", "")
-            except Exception: pass
-
-        if not java_path:
-            java_path = self.detect_java8_path()
-            if java_path: self.log(f"[AUTO] Java 8 detected: {java_path}")
-
-        self.entry_workspace.insert(0, ws_path)
-        self.entry_java.insert(0, java_path)
-
-        if ws_path and os.path.exists(ws_path):
-            self.load_projects_from_workspace()
-
-    # --- UI ACTIONS ---
-
-    def browse_workspace(self):
-        filename = filedialog.askopenfilename(filetypes=[("VS Code Workspace", "*.code-workspace"), ("All Files", "*.*")])
-        if filename:
-            self.entry_workspace.delete(0, tk.END)
-            self.entry_workspace.insert(0, filename)
-            self.save_settings()
-            self.load_projects_from_workspace()
-
-    def browse_java(self):
-        directory = filedialog.askdirectory()
-        if directory:
-            self.entry_java.delete(0, tk.END)
-            self.entry_java.insert(0, directory)
-            self.save_settings()
-
-    def save_settings(self):
-        data = {"workspace_path": self.entry_workspace.get(), "java_home": self.entry_java.get()}
-        try:
-            with open(CONFIG_FILE, 'w') as f: json.dump(data, f)
-        except: pass
-
-    # --- BUILD LOGIC ---
+    # ------------------------------------------------------------------
+    # Workspace projects
+    # ------------------------------------------------------------------
 
     def load_projects_from_workspace(self):
-        workspace_file = self.entry_workspace.get()
-        for widget in self.scrollable_frame.winfo_children(): widget.destroy()
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
         self.projects = []
         self.vars = []
 
-        if not workspace_file or not os.path.exists(workspace_file):
+        workspace_file = self.config.get("workspace_path", "")
+        if not workspace_file or not os.path.isfile(workspace_file):
             self.log("[INFO] Select a valid workspace file.")
             return
 
         try:
-            with open(workspace_file, 'r') as f:
-                clean_lines = [line for line in f.read().splitlines() if not line.strip().startswith("//")]
-                data = json.loads("\n".join(clean_lines))
-                
-                folders = data.get("folders", [])
-                priority = ["common-lib", "bom", "api", "web"]
-                sorted_folders = sorted(folders, key=lambda x: next((i for i, k in enumerate(priority) if k in x['path']), 99))
-                ws_dir = os.path.dirname(workspace_file)
+            project_list = self.config.get_projects_from_workspace()
 
-                for item in sorted_folders:
-                    path = item.get("path")
-                    full_path = os.path.normpath(os.path.join(ws_dir, path)) if not os.path.isabs(path) else os.path.normpath(path)
-                    
-                    var = tk.IntVar()
-                    tk.Checkbutton(self.scrollable_frame, text=full_path, variable=var, anchor='w', bg="white").pack(fill='x', padx=5, pady=2)
-                    self.projects.append(full_path)
-                    self.vars.append(var)
-                self.log(f"[INFO] Loaded {len(self.projects)} projects.")
-                self.save_settings()
-        except Exception as e:
-            self.log(f"[ERROR] Load failed: {e}")
+            for name, full_path in project_list:
+                var = tk.IntVar()
+                tk.Checkbutton(
+                    self.scrollable_frame,
+                    text=full_path,
+                    variable=var,
+                    anchor="w",
+                    bg="white",
+                ).pack(fill="x", padx=5, pady=2)
 
-    def select_all(self): 
-        for var in self.vars: var.set(1)
-    def clear_all(self): 
-        for var in self.vars: var.set(0)
+                self.projects.append(full_path)
+                self.vars.append(var)
 
-    def log(self, message):
-        self.log_area.config(state='normal')
-        self.log_area.insert(tk.END, message + "\n")
-        self.log_area.see(tk.END)
-        self.log_area.config(state='disabled')
+            self.log(f"[INFO] Loaded {len(self.projects)} projects.")
+
+        except Exception as exc:
+            self.log(f"[ERROR] Load failed: {exc}")
+
+    def select_all(self):
+        for var in self.vars:
+            var.set(1)
+
+    def clear_all(self):
+        for var in self.vars:
+            var.set(0)
+
+    # ------------------------------------------------------------------
+    # Build
+    # ------------------------------------------------------------------
 
     def start_build_thread(self):
-        # PRE-BUILD CHECK
-        errors = self.check_prerequisites()
-        if errors:
-            messagebox.showerror("Pre-Build Check Failed", "\n".join(errors))
+        if self.build_running:
+            self.log("[WARN] Build is already running.")
             return
 
-        self.btn_build.config(state="disabled", text="Building... ⏳")
-        threading.Thread(target=self.run_builds).start()
+        errors = self.check_prerequisites()
+        if errors:
+            messagebox.showerror(
+                "Pre-Build Check Failed",
+                "\n".join(errors),
+            )
+            return
 
-    def run_builds(self):
-        java_home = self.entry_java.get()
-        selected_indices = [i for i, var in enumerate(self.vars) if var.get() == 1]
-        
+        selected_indices = [
+            i for i, var in enumerate(self.vars)
+            if var.get() == 1
+        ]
+
         if not selected_indices:
-            self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+            messagebox.showwarning(
+                "Build",
+                "Pilih minimal satu project.",
+            )
+            return
+
+        self.build_running = True
+        self.btn_build.config(
+            state="disabled",
+            text="Building... ⏳",
+        )
+
+        threading.Thread(
+            target=self.run_builds,
+            args=(selected_indices,),
+            daemon=True,
+        ).start()
+
+    def run_builds(self, selected_indices):
+        java_home = self.entry_java.get().strip()
+        mvn_cmd_path, mvn_source = self.get_mvn_command()
+
+        if not mvn_cmd_path:
+            self.finish_build()
+            self.show_error_async("Error", "Maven not found!")
             return
 
         my_env = os.environ.copy()
         my_env["JAVA_HOME"] = java_home
-        my_env["PATH"] = f"{java_home}\\bin;" + my_env["PATH"]
-        comspec = os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")
+        my_env["PATH"] = (
+            f"{java_home}\\bin;"
+            + my_env.get("PATH", "")
+        )
 
-        mvn_cmd_path, _ = self.get_mvn_command()
-        if not mvn_cmd_path:
-            messagebox.showerror("Error", "Maven not found!")
-            return
-        
-        base_cmd = [mvn_cmd_path, "clean", "install", "-Dmaven.javadoc.skip=true", "-DskipTests", "-DPROJECT_ENV=LOCAL"]
+        comspec = os.environ.get(
+            "ComSpec",
+            r"C:\Windows\System32\cmd.exe",
+        )
 
-        self.log("\n" + "="*60)
-        self.log(f"STARTING BUILD SEQUENCE")
-        self.log("="*60)
+        base_cmd = [
+            mvn_cmd_path,
+            "clean",
+            "install",
+            *self.MAVEN_OPTIONS,
+        ]
+
+        self.log("\n" + "=" * 60)
+        self.log("STARTING BUILD SEQUENCE")
+        self.log(f"[MAVEN] {mvn_cmd_path} ({mvn_source})")
+        self.log("[WORKSPACE] " + self.config.get("workspace_path", ""))
+        self.log("=" * 60)
 
         for idx in selected_indices:
             project_path = self.projects[idx]
-            folder_name = os.path.basename(project_path)
-            
+            folder_name = os.path.basename(
+                os.path.normpath(project_path)
+            )
+
             self.log(f"\n>>> Building: {folder_name} ...")
 
-            # --- Pre-flight checks (avoid WinError 2 mystery) ---
             if not os.path.isdir(project_path):
-                self.log(f"❌ [CRITICAL] Project folder not found: {project_path}")
-                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+                self.log(
+                    "❌ [CRITICAL] Project folder not found: "
+                    f"{project_path}"
+                )
+                self.finish_build()
                 return
 
-            if isinstance(base_cmd[0], str) and base_cmd[0].lower().endswith(".cmd") and not os.path.exists(base_cmd[0]):
-                self.log(f"❌ [CRITICAL] Maven file not found: {base_cmd[0]}")
-                self.log("   └── Put apache-maven-* inside ./tools next to the EXE.")
-                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
-                return
-            
-            if not os.path.exists(os.path.join(project_path, "pom.xml")):
-                self.log(f"[SKIP] No pom.xml")
+            if not os.path.isfile(os.path.join(project_path, "pom.xml")):
+                self.log("[SKIP] No pom.xml")
                 continue
 
             try:
-               # If Maven is a .cmd file, run via absolute cmd.exe /c (more reliable than "cmd" on PATH)
-                if isinstance(base_cmd[0], str) and base_cmd[0].lower().endswith((".cmd", ".bat")):
-                    cmdline = [comspec, "/c"] + base_cmd
+                if base_cmd[0].lower().endswith((".cmd", ".bat")):
+                    cmdline = [comspec, "/c", *base_cmd]
                 else:
                     cmdline = base_cmd
 
-                self.log(f"[DEBUG] cmd={cmdline[0]} | cwd={project_path}")
+                self.log(
+                    f"[DEBUG] cmd={cmdline[0]} | cwd={project_path}"
+                )
 
                 process = subprocess.Popen(
-                   cmdline,
-                    cwd=project_path, 
-                    stdout=subprocess.PIPE, 
+                    cmdline,
+                    cwd=project_path,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    env=my_env, 
-                    universal_newlines=True
+                    env=my_env,
+                    universal_newlines=True,
                 )
-                
+
                 for line in process.stdout:
-                    l = line.strip()
-                    if any(x in l for x in ["[INFO]", "[ERROR]", "[WARNING]", "BUILD"]): self.log(l)
-                
+                    line = line.rstrip()
+                    if any(
+                        marker in line
+                        for marker in (
+                            "[INFO]",
+                            "[ERROR]",
+                            "[WARNING]",
+                            "BUILD",
+                        )
+                    ):
+                        self.log(line)
+
                 process.wait()
 
                 if process.returncode == 0:
                     self.log(f"✅ [SUCCESS] {folder_name}")
-                    if "dfms-web" in folder_name: self.copy_ws_properties(project_path)
+                    self.copy_ws_properties(project_path)
                 else:
-                    self.log(f"❌ [FAILURE] {folder_name}")
-                    messagebox.showerror("Build Failed", f"Failed to build {folder_name}")
-                    self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
-                    return 
-            except FileNotFoundError as e:
-                self.log(f"❌ [CRITICAL] FileNotFoundError: {e}")
+                    self.log(
+                        f"❌ [FAILURE] {folder_name} "
+                        f"(exit={process.returncode})"
+                    )
+                    self.show_error_async(
+                        "Build Failed",
+                        f"Failed to build {folder_name}",
+                    )
+                    self.finish_build()
+                    return
+
+            except FileNotFoundError as exc:
+                self.log(f"❌ [CRITICAL] FileNotFoundError: {exc}")
                 self.log(f"[DEBUG] cmdline={cmdline}")
                 self.log(f"[DEBUG] cwd={project_path}")
-                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
-                return
-            except Exception as e:
-                self.log(f"[CRITICAL ERROR] {e}")
-                self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+                self.finish_build()
                 return
 
-        self.log("\n" + "="*60)
+            except Exception as exc:
+                self.log(f"[CRITICAL ERROR] {exc}")
+                self.finish_build()
+                return
+
+        self.log("\n" + "=" * 60)
         self.log("🎉 ALL DONE!")
-        self.log("="*60)
-        messagebox.showinfo("Done", "Build Completed!")
-        self.btn_build.config(state="normal", text="BUILD SELECTED 🚀")
+        self.log("=" * 60)
 
-    def copy_ws_properties(self, web_path):
-        src = os.path.join(web_path, "src", "main", "webapp", "WEB-INF", "ws.properties")
-        dst = os.path.join(web_path, "target", "dfms-web", "WEB-INF") 
-        if os.path.exists(src):
+        self.finish_build()
+        self.show_info_async("Done", "Build Completed!")
+
+    # ------------------------------------------------------------------
+    # ws.properties patch
+    # ------------------------------------------------------------------
+
+    def copy_ws_properties(self, project_path):
+        """
+        Copy ws.properties from source into the project's exploded web
+        artifact after a successful Maven build.
+
+        This is deliberately generic. There is NO dependency on a project
+        named 'dfms-web'.
+
+        Source:
+            <project>/src/main/webapp/WEB-INF/ws.properties
+
+        Destination:
+            <project>/target/<exploded-artifact>/WEB-INF/ws.properties
+
+        The exploded artifact is detected by looking for target directories
+        that contain WEB-INF. Maven's common metadata directories are ignored.
+        """
+        src = os.path.join(
+            project_path,
+            "src",
+            "main",
+            "webapp",
+            "WEB-INF",
+            "ws.properties",
+        )
+
+        if not os.path.isfile(src):
+            # Not every project is a web project, so this is normal.
+            self.log(
+                "   └── [PATCH] ws.properties not present; skipped."
+            )
+            return False
+
+        target_dir = os.path.join(project_path, "target")
+        if not os.path.isdir(target_dir):
+            self.log(
+                "   └── [PATCH] target directory not found; skipped."
+            )
+            return False
+
+        candidates = self.find_exploded_web_artifacts(target_dir)
+
+        if not candidates:
+            self.log(
+                "   └── [PATCH] No exploded web artifact found in target; skipped."
+            )
+            return False
+
+        copied = 0
+
+        for artifact_dir in candidates:
+            destination_dir = os.path.join(
+                artifact_dir,
+                "WEB-INF",
+            )
+
             try:
-                if not os.path.exists(dst): os.makedirs(dst)
-                shutil.copy(src, dst)
-                self.log(f"   └── [PATCH] ws.properties copied.")
-            except Exception as e: self.log(f"   └── [ERROR] Copy failed: {e}")
-        else: self.log(f"   └── [WARN] ws.properties missing in src.")
+                os.makedirs(destination_dir, exist_ok=True)
+                shutil.copy2(src, destination_dir)
+                copied += 1
+
+                artifact_name = os.path.basename(artifact_dir)
+                self.log(
+                    "   └── [PATCH] ws.properties copied to "
+                    f"target/{artifact_name}/WEB-INF/"
+                )
+
+            except Exception as exc:
+                self.log(
+                    "   └── [ERROR] Copy failed for "
+                    f"{artifact_dir}: {exc}"
+                )
+
+        return copied > 0
+
+    def find_exploded_web_artifacts(self, target_dir):
+        """
+        Return exploded web artifact directories under target/.
+
+        A valid candidate must be a direct child of target/ and contain a
+        WEB-INF directory. This avoids accidentally copying into Maven's
+        classes, status, or report directories.
+        """
+        candidates = []
+
+        try:
+            for item in sorted(os.listdir(target_dir)):
+                if item in self.TARGET_IGNORE_DIRS:
+                    continue
+
+                candidate = os.path.join(target_dir, item)
+
+                if not os.path.isdir(candidate):
+                    continue
+
+                web_inf = os.path.join(candidate, "WEB-INF")
+                if os.path.isdir(web_inf):
+                    candidates.append(candidate)
+
+        except OSError as exc:
+            self.log(
+                f"   └── [WARN] Cannot inspect target directory: {exc}"
+            )
+
+        return candidates
+
+    # ------------------------------------------------------------------
+    # UI helpers
+    # ------------------------------------------------------------------
+
+    def set_build_button_state(self, state, text=None):
+        def update():
+            try:
+                self.btn_build.config(
+                    state=state,
+                    text=text or "BUILD SELECTED 🚀",
+                )
+            except tk.TclError:
+                pass
+
+        try:
+            self.root.after(0, update)
+        except tk.TclError:
+            pass
+
+    def finish_build(self):
+        self.build_running = False
+        self.set_build_button_state(
+            "normal",
+            "BUILD SELECTED 🚀",
+        )
+
+    def show_error_async(self, title, message):
+        try:
+            self.root.after(
+                0,
+                lambda: messagebox.showerror(title, message),
+            )
+        except tk.TclError:
+            pass
+
+    def show_info_async(self, title, message):
+        try:
+            self.root.after(
+                0,
+                lambda: messagebox.showinfo(title, message),
+            )
+        except tk.TclError:
+            pass
+
+    def log(self, message):
+        def write():
+            try:
+                self.log_area.config(state="normal")
+                self.log_area.insert(tk.END, str(message) + "\n")
+                self.log_area.see(tk.END)
+                self.log_area.config(state="disabled")
+            except tk.TclError:
+                pass
+
+        try:
+            self.root.after(0, write)
+        except tk.TclError:
+            pass
+
 
 if __name__ == "__main__":
     root = tk.Tk()

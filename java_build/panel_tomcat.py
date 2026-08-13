@@ -60,6 +60,7 @@ class TomcatPanel(tk.Frame):
         self.launcher_proc = None
         self.tomcat_pid = None
         self.tomcat_home = None
+        self.catalina_base = None
         self.process_lock = threading.Lock()
 
         # --------------------------------------------------------------
@@ -272,6 +273,46 @@ class TomcatPanel(tk.Frame):
             path_frame,
             text="Browse...",
             command=self.browse_home,
+            font=("Arial", 8),
+        ).grid(
+            row=0,
+            column=1,
+            padx=(5, 0),
+        )
+
+        tk.Label(
+            server_frame,
+            text="Instance Base (CATALINA_BASE):",
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(5, 0),
+        )
+
+        base_frame = tk.Frame(server_frame)
+        base_frame.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+        )
+
+        base_frame.grid_columnconfigure(
+            0,
+            weight=1,
+        )
+
+        self.ent_base = tk.Entry(base_frame)
+        self.ent_base.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+
+        tk.Button(
+            base_frame,
+            text="Browse...",
+            command=self.browse_base,
             font=("Arial", 8),
         ).grid(
             row=0,
@@ -743,55 +784,288 @@ class TomcatPanel(tk.Frame):
         )
 
     # ==================================================================
-    # Tomcat Home
+    # Tomcat Home / CATALINA_BASE
     # ==================================================================
 
     def load_server_home(self):
-        home = self.config.get_instance_home(
+        home = self.config.get_tomcat_home()
+
+        if home:
+            self.ent_home.delete(0, tk.END)
+            self.ent_home.insert(0, home)
+            self.tomcat_home = home
+
+        base = self.config.ensure_instance_base(
             self.instance_name
         )
 
-        if home:
-            self.ent_home.delete(
-                0,
-                tk.END,
-            )
+        if base:
+            self.ent_base.delete(0, tk.END)
+            self.ent_base.insert(0, base)
+            self.catalina_base = base
 
-            self.ent_home.insert(
-                0,
-                home,
-            )
+        if home and os.path.isdir(home):
+            try:
+                self.ensure_instance_runtime(home, base)
+            except Exception as exc:
+                self.log(
+                    f"[WARN] Cannot initialize CATALINA_BASE: {exc}"
+                )
 
     def browse_home(self):
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(
+            title="Select shared Tomcat Home (CATALINA_HOME)"
+        )
 
         if not directory:
             return
 
-        self.ent_home.delete(
-            0,
-            tk.END,
+        if not os.path.isdir(os.path.join(directory, "bin")):
+            return messagebox.showerror(
+                "Tomcat Home",
+                "Folder yang dipilih bukan Tomcat Home.\n\n"
+                "Pastikan terdapat folder bin dan conf.",
+            )
+
+        self.ent_home.delete(0, tk.END)
+        self.ent_home.insert(0, directory)
+
+        self.tomcat_home = directory
+        self.config.set_tomcat_home(directory)
+
+        base = self.config.ensure_instance_base(
+            self.instance_name
         )
 
-        self.ent_home.insert(
-            0,
-            directory,
+        self.ent_base.delete(0, tk.END)
+        self.ent_base.insert(0, base)
+        self.catalina_base = base
+
+        try:
+            self.ensure_instance_runtime(directory, base)
+            self.load_current_ports()
+        except Exception as exc:
+            self.log(
+                f"[ERROR] Failed to initialize instance: {exc}"
+            )
+
+    def browse_base(self):
+        directory = filedialog.askdirectory(
+            title="Select CATALINA_BASE for this instance"
         )
 
-        self.config.set_instance_home(
+        if not directory:
+            return
+
+        self.config.set_instance_base(
             self.instance_name,
             directory,
         )
 
-        if not self.config.get(
-            "tomcat_home"
-        ):
-            self.config.set(
-                "tomcat_home",
-                directory,
+        self.catalina_base = directory
+
+        self.ent_base.delete(0, tk.END)
+        self.ent_base.insert(0, directory)
+
+        home = self.ent_home.get().strip()
+
+        if home and os.path.isdir(home):
+            try:
+                self.ensure_instance_runtime(home, directory)
+                self.load_current_ports()
+            except Exception as exc:
+                self.log(
+                    f"[ERROR] Failed to initialize CATALINA_BASE: {exc}"
+                )
+
+    def _initialize_instance_ports(self, base):
+        """
+        Give a newly-created CATALINA_BASE a deterministic port offset.
+
+        Instance #1 keeps the Tomcat distribution's original ports.
+        Instance #2 becomes +1, instance #3 +2, and so on.
+
+        This only runs for a freshly copied server.xml, so user-edited
+        instance ports are never overwritten later.
+        """
+        server_xml = os.path.join(
+            base,
+            "conf",
+            "server.xml",
+        )
+
+        if not os.path.isfile(server_xml):
+            return
+
+        tabs = self.config.get_active_tabs()
+        current = self.instance_name
+
+        names = list(tabs) if isinstance(tabs, list) else []
+
+        if current not in names:
+            names.append(current)
+
+        try:
+            offset = names.index(current)
+        except ValueError:
+            offset = 0
+
+        if offset <= 0:
+            return
+
+        try:
+            with open(
+                server_xml,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                content = f.read()
+
+            ports = {
+                "shutdown": 8005 + offset,
+                "http": 8080 + offset,
+                "ajp": 8009 + offset,
+            }
+
+            content = re.sub(
+                r'(<Server[^>]*port=")\d+(")',
+                rf'\g<1>{ports["shutdown"]}\g<2>',
+                content,
+                count=1,
             )
 
-        self.load_current_ports()
+            content = re.sub(
+                r'(<Connector[^>]*protocol=["\']HTTP/[^"\']*["\'][^>]*port=")\d+(")',
+                rf'\g<1>{ports["http"]}\g<2>',
+                content,
+                count=1,
+            )
+
+            content = re.sub(
+                r'(<Connector[^>]*port=")\d+("[^>]*protocol=["\']HTTP)',
+                rf'\g<1>{ports["http"]}\g<2>',
+                content,
+                count=1,
+            )
+
+            content = re.sub(
+                r'(<Connector[^>]*protocol=["\']AJP/[^"\']*["\'][^>]*port=")\d+(")',
+                rf'\g<1>{ports["ajp"]}\g<2>',
+                content,
+                count=1,
+            )
+
+            content = re.sub(
+                r'(<Connector[^>]*port=")\d+("[^>]*protocol=["\']AJP)',
+                rf'\g<1>{ports["ajp"]}\g<2>',
+                content,
+                count=1,
+            )
+
+            with open(
+                server_xml,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(content)
+
+            setenv = os.path.join(
+                base,
+                "bin",
+                "setenv.bat",
+            )
+
+            debug_port = 8000 + offset
+
+            with open(
+                setenv,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(
+                    "set JPDA_ADDRESS="
+                    f"{debug_port}\n"
+                    "set JPDA_TRANSPORT=dt_socket\n"
+                )
+
+            self.log(
+                "[TOMCAT] Auto-assigned ports: "
+                f"HTTP={ports['http']}, "
+                f"AJP={ports['ajp']}, "
+                f"Shutdown={ports['shutdown']}, "
+                f"Debug={debug_port}"
+            )
+
+        except Exception as exc:
+            self.log(
+                f"[WARN] Could not auto-assign ports: {exc}"
+            )
+
+    def ensure_instance_runtime(self, home, base):
+        """
+        Bootstrap an isolated CATALINA_BASE.
+
+        CATALINA_HOME is never modified. Each instance receives its own
+        conf/logs/temp/webapps/work/bin directories.
+        """
+
+        if not base:
+            raise ValueError("CATALINA_BASE belum ditentukan.")
+
+        if not os.path.isdir(home):
+            raise ValueError(f"CATALINA_HOME tidak valid: {home}")
+
+        os.makedirs(base, exist_ok=True)
+
+        for directory in (
+            "logs",
+            "temp",
+            "webapps",
+            "work",
+            "conf",
+            "bin",
+        ):
+            os.makedirs(
+                os.path.join(base, directory),
+                exist_ok=True,
+            )
+
+        source_conf = os.path.join(home, "conf")
+        target_conf = os.path.join(base, "conf")
+        server_xml = os.path.join(target_conf, "server.xml")
+
+        # Copy the standard Tomcat configuration only once. After that,
+        # server.xml belongs exclusively to this instance.
+        if (
+            os.path.isdir(source_conf)
+            and not os.path.exists(server_xml)
+        ):
+            for item in os.listdir(source_conf):
+                source = os.path.join(source_conf, item)
+                target = os.path.join(target_conf, item)
+
+                if os.path.isdir(source):
+                    shutil.copytree(
+                        source,
+                        target,
+                        dirs_exist_ok=True,
+                    )
+                else:
+                    shutil.copy2(source, target)
+
+            self.log(
+                "[TOMCAT] Initialized isolated "
+                f"CATALINA_BASE: {base}"
+            )
+
+            self._initialize_instance_ports(base)
+
+        self.config.set_instance_base(
+            self.instance_name,
+            base,
+        )
+
+        self.catalina_base = base
 
     # ==================================================================
     # Project List
@@ -1088,8 +1362,24 @@ class TomcatPanel(tk.Frame):
                 ),
             )
 
+        base = self.ent_base.get().strip()
+
+        if not base:
+            return messagebox.showerror(
+                "Deployment Error",
+                "CATALINA_BASE belum diset.",
+            )
+
+        try:
+            self.ensure_instance_runtime(home, base)
+        except Exception as exc:
+            return messagebox.showerror(
+                "Deployment Error",
+                f"Gagal menyiapkan CATALINA_BASE:\n\n{exc}",
+            )
+
         xml_dir = os.path.join(
-            home,
+            base,
             "conf",
             "Catalina",
             "localhost",
@@ -1125,9 +1415,13 @@ class TomcatPanel(tk.Frame):
                     xml_content
                 )
 
-            self.config.set_instance_home(
-                self.instance_name,
+            self.config.set_tomcat_home(
                 home,
+            )
+
+            self.config.set_instance_base(
+                self.instance_name,
+                base,
             )
 
             self.config.set_instance_deployment(
@@ -1180,8 +1474,16 @@ class TomcatPanel(tk.Frame):
                 "Tomcat Home belum diset.",
             )
 
+        base = self.ent_base.get().strip()
+
+        if not base:
+            return messagebox.showerror(
+                "Undeploy",
+                "CATALINA_BASE belum diset.",
+            )
+
         xml_path = os.path.join(
-            home,
+            base,
             "conf",
             "Catalina",
             "localhost",
@@ -1296,8 +1598,13 @@ class TomcatPanel(tk.Frame):
         ):
             return
 
+        base = self.ent_base.get().strip()
+
+        if not base:
+            return
+
         server_xml = os.path.join(
-            home,
+            base,
             "conf",
             "server.xml",
         )
@@ -1370,7 +1677,7 @@ class TomcatPanel(tk.Frame):
                 )
 
         setenv = os.path.join(
-            home,
+            base,
             "bin",
             "setenv.bat",
         )
@@ -1413,13 +1720,23 @@ class TomcatPanel(tk.Frame):
         ):
             return
 
-        server_xml = os.path.join(
-            home,
-            "conf",
-            "server.xml",
-        )
+        base = self.ent_base.get().strip()
+
+        if not base:
+            return
 
         try:
+            self.ensure_instance_runtime(
+                home,
+                base,
+            )
+
+            server_xml = os.path.join(
+                base,
+                "conf",
+                "server.xml",
+            )
+
             with open(
                 server_xml,
                 "r",
@@ -1510,7 +1827,7 @@ class TomcatPanel(tk.Frame):
         # --------------------------------------------------------------
 
         setenv = os.path.join(
-            home,
+            base,
             "bin",
             "setenv.bat",
         )
@@ -1580,6 +1897,7 @@ class TomcatPanel(tk.Frame):
 
     def start_normal(self):
         home = self.ent_home.get().strip()
+        base = self.ent_base.get().strip()
 
         java = self.config.get(
             "java_home"
@@ -1597,6 +1915,14 @@ class TomcatPanel(tk.Frame):
                 "JAVA_HOME tidak valid.",
             )
 
+        try:
+            self.ensure_instance_runtime(home, base)
+        except Exception as exc:
+            return messagebox.showerror(
+                "Tomcat",
+                f"Gagal menyiapkan CATALINA_BASE:\n\n{exc}",
+            )
+
         if self.is_tomcat_running():
             return messagebox.showinfo(
                 "Tomcat",
@@ -1612,6 +1938,7 @@ class TomcatPanel(tk.Frame):
 
         env["JAVA_HOME"] = java
         env["CATALINA_HOME"] = home
+        env["CATALINA_BASE"] = base
 
         env["PATH"] = (
             f"{java}\\bin;"
@@ -1635,6 +1962,7 @@ class TomcatPanel(tk.Frame):
             args=(
                 command,
                 home,
+                base,
                 env,
             ),
             daemon=True,
@@ -1642,6 +1970,7 @@ class TomcatPanel(tk.Frame):
 
     def start_debug(self):
         home = self.ent_home.get().strip()
+        base = self.ent_base.get().strip()
 
         java = self.config.get(
             "java_home"
@@ -1669,6 +1998,14 @@ class TomcatPanel(tk.Frame):
             return messagebox.showerror(
                 "Debug",
                 "JAVA_HOME tidak valid.",
+            )
+
+        try:
+            self.ensure_instance_runtime(home, base)
+        except Exception as exc:
+            return messagebox.showerror(
+                "Debug",
+                f"Gagal menyiapkan CATALINA_BASE:\n\n{exc}",
             )
 
         if (
@@ -1763,7 +2100,7 @@ class TomcatPanel(tk.Frame):
 
         try:
             self.prepare_jpda(
-                home,
+                base,
                 debug_port,
             )
 
@@ -1789,6 +2126,7 @@ class TomcatPanel(tk.Frame):
 
         env["JAVA_HOME"] = java
         env["CATALINA_HOME"] = home
+        env["CATALINA_BASE"] = base
 
         env["PATH"] = (
             f"{java}\\bin;"
@@ -1796,7 +2134,6 @@ class TomcatPanel(tk.Frame):
             + env.get("PATH", "")
         )
 
-        env["PROJECT_ENV"] = "LOCAL"
 
         self.log("")
         self.log("=" * 70)
@@ -1822,6 +2159,7 @@ class TomcatPanel(tk.Frame):
             target=self._start_debug_sequence,
             args=(
                 home,
+                base,
                 env,
                 debug_port,
                 workspace,
@@ -1832,7 +2170,8 @@ class TomcatPanel(tk.Frame):
     def _run_proc(
         self,
         command,
-        cwd,
+        home,
+        base,
         env,
     ):
         launcher = None
@@ -1847,7 +2186,7 @@ class TomcatPanel(tk.Frame):
             launcher = subprocess.Popen(
                 command,
                 cwd=os.path.join(
-                    cwd,
+                    home,
                     "bin",
                 ),
                 env=env,
@@ -1860,7 +2199,8 @@ class TomcatPanel(tk.Frame):
 
             with self.process_lock:
                 self.launcher_proc = launcher
-                self.tomcat_home = cwd
+                self.tomcat_home = home
+                self.catalina_base = base
 
             self.log(
                 "[PROCESS] Launcher started. "
@@ -1874,7 +2214,8 @@ class TomcatPanel(tk.Frame):
 
             while time.time() < deadline:
                 pid = self._find_tomcat_pid(
-                    cwd,
+                    home,
+                    base,
                     launcher.pid,
                 )
 
@@ -1944,10 +2285,17 @@ class TomcatPanel(tk.Frame):
         """
 
         home = self.ent_home.get().strip()
+        base = self.ent_base.get().strip()
 
         if not home:
             self.log(
                 "Tomcat Home belum diset."
+            )
+            return
+
+        if not base:
+            self.log(
+                "CATALINA_BASE belum diset."
             )
             return
 
@@ -1956,7 +2304,8 @@ class TomcatPanel(tk.Frame):
 
         if not tomcat_pid:
             tomcat_pid = self._find_tomcat_pid(
-                home
+                home,
+                base,
             )
 
             if tomcat_pid:
@@ -2046,11 +2395,19 @@ class TomcatPanel(tk.Frame):
 
     def prepare_jpda(
         self,
-        home,
+        base,
         debug_port,
     ):
+        os.makedirs(
+            os.path.join(
+                base,
+                "bin",
+            ),
+            exist_ok=True,
+        )
+
         setenv = os.path.join(
-            home,
+            base,
             "bin",
             "setenv.bat",
         )
@@ -2112,6 +2469,7 @@ class TomcatPanel(tk.Frame):
     def _start_debug_sequence(
         self,
         home,
+        base,
         env,
         debug_port,
         workspace,
@@ -2140,6 +2498,7 @@ class TomcatPanel(tk.Frame):
             with self.process_lock:
                 self.launcher_proc = launcher
                 self.tomcat_home = home
+                self.catalina_base = base
 
             self.log(
                 "[DEBUG] Launcher started. "
@@ -2439,11 +2798,17 @@ class TomcatPanel(tk.Frame):
     def _find_tomcat_pid(
         self,
         home,
+        base,
         launcher_pid=None,
     ):
         home = os.path.normcase(
             os.path.abspath(home)
         )
+
+        base = os.path.normcase(
+            os.path.abspath(base)
+        )
+
 
         processes = (
             self._get_windows_processes()
@@ -2522,6 +2887,12 @@ class TomcatPanel(tk.Frame):
             ):
                 continue
 
+            if (
+                "-dcatalina.base="
+                not in command_line
+            ):
+                continue
+
             normalized_command = (
                 command_line
                 .replace(
@@ -2542,8 +2913,18 @@ class TomcatPanel(tk.Frame):
                 )
             )
 
+            normalized_base = (
+                base
+                .replace(
+                    "\\",
+                    "/",
+                )
+            )
+
             if (
                 normalized_home
+                not in normalized_command
+                or normalized_base
                 not in normalized_command
             ):
                 continue
@@ -2568,8 +2949,9 @@ class TomcatPanel(tk.Frame):
 
     def is_tomcat_running(self):
         home = self.ent_home.get().strip()
+        base = self.ent_base.get().strip()
 
-        if not home:
+        if not home or not base:
             return False
 
         with self.process_lock:
@@ -2602,7 +2984,8 @@ class TomcatPanel(tk.Frame):
                 self.tomcat_pid = None
 
         pid = self._find_tomcat_pid(
-            home
+            home,
+            base,
         )
 
         if pid:

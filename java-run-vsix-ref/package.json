@@ -1,0 +1,297 @@
+{
+  "name": "java-run",
+  "displayName": "Java Run Build & Tomcat Manager",
+  "description": "Workspace-scoped Maven build and multi-instance Tomcat manager for VS Code.",
+  "version": "0.1.14",
+  "publisher": "sm-devops",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Debuggers",
+    "Build Tools"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "javaRun",
+          "title": "Java Run",
+          "icon": "resources/java-run.svg"
+        }
+      ]
+    },
+    "views": {
+      "javaRun": [
+        {
+          "id": "javaRunExplorer",
+          "name": "Build & Tomcat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "javaRun.refresh",
+        "title": "Java Run: Refresh"
+      },
+      {
+        "command": "javaRun.selectWorkspace",
+        "title": "Java Run: Select .code-workspace"
+      },
+      {
+        "command": "javaRun.buildInstall",
+        "title": "Java Run: Maven Install"
+      },
+      {
+        "command": "javaRun.buildClean",
+        "title": "Java Run: Maven Clean"
+      },
+      {
+        "command": "javaRun.buildCleanInstall",
+        "title": "Java Run: Maven Clean & Install"
+      },
+      {
+        "command": "javaRun.buildInstallAll",
+        "title": "Java Run: Maven Install All",
+        "icon": "$(package)"
+      },
+      {
+        "command": "javaRun.buildCleanAll",
+        "title": "Java Run: Maven Clean All",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "javaRun.buildCleanInstallAll",
+        "title": "Java Run: Maven Clean & Install All",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "javaRun.tomcatStart",
+        "title": "Java Run: Start Tomcat"
+      },
+      {
+        "command": "javaRun.tomcatDebug",
+        "title": "Java Run: Debug Tomcat"
+      },
+      {
+        "command": "javaRun.tomcatStop",
+        "title": "Java Run: Stop Tomcat"
+      },
+      {
+        "command": "javaRun.tomcatAdd",
+        "title": "Java Run: Add Tomcat Instance"
+      },
+      {
+        "command": "javaRun.tomcatRemove",
+        "title": "Java Run: Remove Tomcat Instance"
+      },
+      {
+        "command": "javaRun.deploy",
+        "title": "Java Run: Deploy Project"
+      },
+      {
+        "command": "javaRun.undeploy",
+        "title": "Java Run: Undeploy"
+      },
+      {
+        "command": "javaRun.openLogs",
+        "title": "Java Run: Open Logs"
+      },
+      {
+        "command": "javaRun.configure",
+        "title": "Java Run: Configure"
+      },
+      {
+        "command": "javaRun.configureJava",
+        "title": "Java Run: Configure Java Home"
+      },
+      {
+        "command": "javaRun.configureMaven",
+        "title": "Java Run: Configure Maven Home"
+      },
+      {
+        "command": "javaRun.configureTomcat",
+        "title": "Java Run: Configure Tomcat Home"
+      },
+      {
+        "command": "javaRun.tomcatConfigurePorts",
+        "title": "Java Run: Configure Tomcat Ports",
+        "icon": "$(server)"
+      },
+      {
+        "command": "javaRun.tomcatCleanupDescriptors",
+        "title": "Java Run: Clean Untracked Tomcat Deployments",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "javaRun.refresh",
+          "when": "view == javaRunExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "javaRun.configure",
+          "when": "view == javaRunExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "javaRun.selectWorkspace",
+          "when": "view == javaRunExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "javaRun.openLogs",
+          "when": "view == javaRunExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "javaRun.buildInstallAll",
+          "when": "view == javaRunExplorer",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildCleanAll",
+          "when": "view == javaRunExplorer",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildCleanInstallAll",
+          "when": "view == javaRunExplorer",
+          "group": "build"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "javaRun.buildInstall",
+          "when": "view == javaRunExplorer && viewItem == project",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildClean",
+          "when": "view == javaRunExplorer && viewItem == project",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildCleanInstall",
+          "when": "view == javaRunExplorer && viewItem == project",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.tomcatStart",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat"
+        },
+        {
+          "command": "javaRun.tomcatDebug",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat"
+        },
+        {
+          "command": "javaRun.tomcatStop",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat"
+        },
+        {
+          "command": "javaRun.tomcatRemove",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat"
+        },
+        {
+          "command": "javaRun.deploy",
+          "when": "view == javaRunExplorer && viewItem == project",
+          "group": "deploy"
+        },
+        {
+          "command": "javaRun.configureJava",
+          "when": "view == javaRunExplorer && viewItem == config-java_home",
+          "group": "config"
+        },
+        {
+          "command": "javaRun.configureMaven",
+          "when": "view == javaRunExplorer && viewItem == config-maven_home",
+          "group": "config"
+        },
+        {
+          "command": "javaRun.configureTomcat",
+          "when": "view == javaRunExplorer && viewItem == config-tomcat_home",
+          "group": "config"
+        },
+        {
+          "command": "javaRun.tomcatConfigurePorts",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat@20"
+        },
+        {
+          "command": "javaRun.tomcatCleanupDescriptors",
+          "when": "view == javaRunExplorer && viewItem == tomcat",
+          "group": "tomcat@30"
+        },
+        {
+          "command": "javaRun.buildInstallAll",
+          "when": "view == javaRunExplorer && viewItem == projectSection",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildCleanAll",
+          "when": "view == javaRunExplorer && viewItem == projectSection",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.buildCleanInstallAll",
+          "when": "view == javaRunExplorer && viewItem == projectSection",
+          "group": "build"
+        },
+        {
+          "command": "javaRun.undeploy",
+          "when": "view == javaRunExplorer && viewItem == deployment",
+          "group": "deploy"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Java Run",
+      "properties": {
+        "javaRun.pythonExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable used to run the Java Run backend. Empty means auto-detect."
+        },
+        "javaRun.backendLogLevel": {
+          "type": "string",
+          "enum": [
+            "INFO",
+            "DEBUG"
+          ],
+          "default": "INFO"
+        },
+        "javaRun.tomcatStartupTimeout": {
+          "type": "number",
+          "default": 450,
+          "minimum": 1,
+          "description": "Default Tomcat startup/debug timeout in seconds. Each Tomcat instance can override this from Configure Tomcat Ports."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile",
+    "package:vsix": "npm run vscode:prepublish && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^3.6.0"
+  },
+  "license": "MIT"
+}
